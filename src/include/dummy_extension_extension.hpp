@@ -1,27 +1,25 @@
+// dummy_extension_extension.hpp
 #pragma once
+
 #include "duckdb.hpp"
-#include "duckdb/execution/physical_operator.hpp"
+#include "duckdb/optimizer/optimizer_extension.hpp"
+#include "duckdb/planner/logical_operator.hpp"
 
 namespace duckdb {
 
-struct DummyFunctionData : public TableFunctionData {
-    DummyFunctionData() = default;
-    shared_ptr<Relation> plan;
-    unique_ptr<QueryResult> res;
-    unique_ptr<Connection> conn;
-};
-
-class DummyExtensionExtension : public Extension {
+class DummyExtensionExtension {
 public:
-    void Load(DuckDB &db) override;
-    std::string Name() override;
-    std::string Version() const override { return "v0.0.1"; }
+    static void Load(DuckDB &db);
+    static void InjectDummyOperator(unique_ptr<LogicalOperator> &plan);
+    
+    // Required extension functions
+    static const char *Name() {
+        return "dummy_extension";
+    }
+    
+    static const char *Version() {
+        return "v0.0.1";
+    }
 };
-
-void InitializeDummyFunction(const Connection &con);
-
-extern "C" {
-    void InjectDummyOperator(unique_ptr<PhysicalOperator> &plan);
-}
 
 } // namespace duckdb
