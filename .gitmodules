@@ -5,4 +5,4 @@
 [submodule "duckdb"]
 	path = duckdb
 	url = https://github.com/itsknk/duckdb.git
-	branch = no_internal_modification
+	branch = log-to-phy-debug
