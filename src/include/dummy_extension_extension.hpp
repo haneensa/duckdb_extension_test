@@ -1,25 +1,38 @@
-// dummy_extension_extension.hpp
 #pragma once
 
 #include "duckdb.hpp"
-#include "duckdb/optimizer/optimizer_extension.hpp"
-#include "duckdb/planner/logical_operator.hpp"
+#include "duckdb/execution/physical_operator.hpp"
+#include "duckdb/planner/operator/logical_projection.hpp"
+#include "duckdb/planner/expression/bound_columnref_expression.hpp"
+#include "duckdb/function/aggregate_function.hpp"
+#include "duckdb/planner/operator/logical_aggregate.hpp"
+#include "duckdb/planner/expression/bound_aggregate_expression.hpp"
+#include "duckdb/common/vector_operations/vector_operations.hpp"
+#include "duckdb/catalog/catalog_entry/aggregate_function_catalog_entry.hpp"
+#include "duckdb/function/function.hpp"
+#include "duckdb/planner/operator/logical_get.hpp"
 
 namespace duckdb {
 
-class DummyExtensionExtension {
+struct DummyState {
+   static idx_t rowid_idx;
+   static bool in_group_by;
+   static idx_t table_idx;
+   static bool first_projection_done;
+};
+
+class DummyLineageOperator : public LogicalOperator {
 public:
-    static void Load(DuckDB &db);
-    static void InjectDummyOperator(unique_ptr<LogicalOperator> &plan);
-    
-    // Required extension functions
-    static const char *Name() {
-        return "dummy_extension";
-    }
-    
-    static const char *Version() {
-        return "v0.0.1";
-    }
+   DummyLineageOperator(vector<LogicalType> types, idx_t estimated_cardinality);
+   void ResolveTypes() override;
+   vector<ColumnBinding> GetColumnBindings() override;
+};
+
+class DummyExtensionExtension : public Extension {
+public:
+   void Load(DuckDB &db) override;
+   std::string Name() override;
+   std::string Version() const override { return "v0.0.1"; }
 };
 
 } // namespace duckdb
