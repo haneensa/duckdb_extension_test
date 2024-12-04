@@ -21,12 +21,6 @@ struct DummyState {
    static bool first_projection_done;
 };
 
-class DummyLineageOperator : public LogicalOperator {
-public:
-   DummyLineageOperator(vector<LogicalType> types, idx_t estimated_cardinality);
-   void ResolveTypes() override;
-   vector<ColumnBinding> GetColumnBindings() override;
-};
 
 class DummyExtensionExtension : public Extension {
 public:
