@@ -1,5 +1,6 @@
 #define DUCKDB_EXTENSION_MAIN
 #include "dummy_extension_extension.hpp"
+#include "physical_dummy_operator.hpp"
 #include "duckdb/main/config.hpp"
 #include "duckdb/catalog/catalog.hpp"
 #include "duckdb/catalog/catalog_entry/aggregate_function_catalog_entry.hpp"
@@ -15,47 +16,6 @@ idx_t DummyState::rowid_idx = 0;
 bool DummyState::in_group_by = false;
 idx_t DummyState::table_idx = 0;
 bool DummyState::first_projection_done = false;
-
-DummyLineageOperator::DummyLineageOperator(vector<LogicalType> types, idx_t estimated_cardinality)
-    : LogicalOperator(LogicalOperatorType::LOGICAL_EXTENSION_OPERATOR) {
-    std::cout << "DummyLineageOperator constructor - type count: " << types.size() << "\n";
-    this->types = std::move(types);
-    this->estimated_cardinality = estimated_cardinality;
-}
-
-void DummyLineageOperator::ResolveTypes() {
-    std::cout << "[DEBUG] DummyLineageOperator::ResolveTypes - entry\n";
-    if (children.empty()) {
-        std::cout << "[DEBUG] No children in DummyLineageOperator::ResolveTypes\n";
-        return;
-    }
-    // Copy types from child and log them
-    types = children[0]->types;
-    std::cout << "[DEBUG] Child types resolved: ";
-    for (auto &type : types) {
-        std::cout << type.ToString() << " ";
-    }
-    std::cout << "\n";
-    std::cout << "[DEBUG] DummyLineageOperator::ResolveTypes - exit\n";
-}
-
-vector<ColumnBinding> DummyLineageOperator::GetColumnBindings() {
-    std::cout << "[DEBUG] DummyLineageOperator::GetColumnBindings - entry\n";
-    if (children.empty()) {
-        std::cout << "[DEBUG] No children in DummyLineageOperator::GetColumnBindings\n";
-        return {};
-    }
-    auto child_bindings = children[0]->GetColumnBindings();
-    std::cout << "[DEBUG] Child column bindings: ";
-    for (auto &binding : child_bindings) {
-        std::cout << binding.ToString() << " ";
-    }
-    std::cout << "\n";
-    return child_bindings;
-}
-
-
-
 
 void InjectRowIdAndProjection(unique_ptr<LogicalOperator> &op) {
     if (!op) return;
@@ -89,6 +49,7 @@ AggregateFunction GetListFunction(ClientContext &context) {
 void ModifyLogicalAggregate(unique_ptr<LogicalOperator> &op, ClientContext &context) {
     if (!op) return;
 
+    // Recursively modify any child operators
     for (auto &child : op->children) {
         ModifyLogicalAggregate(child, context);
     }
@@ -148,17 +109,27 @@ void ModifyLogicalAggregate(unique_ptr<LogicalOperator> &op, ClientContext &cont
             aggr.types.push_back(LogicalType::LIST(LogicalType::BIGINT));
             
             std::cout << "[DEBUG] Aggregate types after adding LIST(rowid): " << aggr.types.size() << "\n";
-            
-            auto dummy = make_uniq<DummyLineageOperator>(aggr.types, aggr.estimated_cardinality);
-            dummy->children.push_back(std::move(op));
-            op = std::move(dummy);
-            
-            std::cout << "[DEBUG] Aggregate operator modified and DummyLineage added\n";
+
+            // First, we create the LogicalDummyOperator and wrap the original plan
+            auto dummy_operator = make_uniq<LogicalDummyOperator>(std::move(op));
+
+            // Now, we translate LogicalDummyOperator into PhysicalDummyOperator
+            PhysicalPlanGenerator generator(context);
+            auto physical_operator = dummy_operator->CreatePlan(context, generator);
+
+            // Debug: Confirm physical operator is created
+            std::cout << "[DEBUG] Created Physical Operator: " << physical_operator->GetName() << std::endl;
+
+            // we cannot directly assign it back to 'op', since 'op' is a LogicalOperator*
+            // Instead, we should handle the physical operator separately, or process it further as needed
+            unique_ptr<PhysicalOperator> physical_op = std::move(physical_operator);
+
+            // If we need to use this in the physical plan, process `physical_op` instead of `op`
+
+            std::cout << "[DEBUG] PhysicalDummyOperator created and processed.\n";
         }
     }
 }
-
-
 
 std::string DummyExtensionExtension::Name() {
     return "dummy_extension";

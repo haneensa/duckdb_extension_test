@@ -5,6 +5,7 @@
 #include "duckdb/planner/logical_operator.hpp"
 #include "duckdb/planner/operator/logical_extension_operator.hpp"
 #include "duckdb/execution/physical_plan_generator.hpp"
+#include <iostream>
 
 namespace duckdb {
 
@@ -21,6 +22,7 @@ public:
                              DataChunk &chunk,
                              GlobalOperatorState &gstate,
                              OperatorState &state) const override {
+        std::cout << "[DEBUG] Executing PhysicalDummyOperator" << std::endl;
         chunk.Reference(input);
         return OperatorResultType::NEED_MORE_INPUT;
     }
@@ -43,10 +45,21 @@ public:
 
     unique_ptr<PhysicalOperator> CreatePlan(ClientContext &context, PhysicalPlanGenerator &generator) override {
     // Get a plan for our child using the public API
-        auto child = generator.CreatePlan(std::move(children[0]));
-        auto child_types = child->types; // Save types before moving child
-        return make_uniq<PhysicalDummyOperator>(child_types, std::move(child));
-    }
+    auto child = generator.CreatePlan(std::move(children[0]));  // Generate physical plan for the child operator
+    
+    auto child_types = child->types; // Save types before moving child
+    
+    // Create the physical operator (PhysicalDummyOperator)
+    auto physical_operator = make_uniq<PhysicalDummyOperator>(child_types, std::move(child));
+
+    std::cout << "[DEBUG] Created Physical Operator: " << typeid(*physical_operator).name() << std::endl;
+    
+    // Log the creation of the physical operator
+    std::cout << "[DEBUG] Created Physical Operator: " << physical_operator->GetName() << std::endl;
+    
+    return std::move(physical_operator);  // Return the physical operator
+}
+
 
 protected:
     void ResolveTypes() override {
