@@ -14,7 +14,7 @@
 
 namespace duckdb {
 
-struct DummyState {
+struct LineageState {
    static idx_t rowid_idx;
    static bool in_group_by;
    static idx_t table_idx;
@@ -22,7 +22,7 @@ struct DummyState {
 };
 
 
-class DummyExtensionExtension : public Extension {
+class LineageExtension : public Extension {
 public:
    void Load(DuckDB &db) override;
    std::string Name() override;

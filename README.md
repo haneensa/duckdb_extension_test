@@ -1,33 +1,29 @@
-# Dummy_extension
+# Lineage Extension
 
-This repository is based on https://github.com/duckdb/extension-template, check it out if you want to build and ship your own DuckDB extension.
+This experimental repository that extends DuckDB with lineage capture.
 
 ---
 
-This is a custom extension that injects a dummy operator into the physical query plan.
+This is a custom extension that propagate and manage lineage 
 
 ## Features
-- Injects a dummy operator wrapping table scan operations.
-- Demonstrates how to modify physical plans in DuckDB.
+- Wrap each operator with lineage Propagation logic
+- Manages lineage propagation internally and hides it from the user
+- Expose in-memory lineage as relational tables
 
 ## Usage
 ```bash
-LOAD 'dummy_extension.duckdb_extension';
+LOAD 'lineage_extension.duckdb_extension';
 CREATE TABLE test (id INTEGER);
 INSERT INTO test VALUES (1), (2), (3);
-EXPLAIN ANALYZE SELECT * FROM test;
+SELECT * FROM test; // TODO: add a method to indicate we want lineage for this query
+// TODO: add a method to query lineage metadata (queries run with lineage, their ids, etc.)
+SELECT * FROM lineage("SELECT * FROM TEST"); // TODO: make it easier to specify which lineage data we want
 ```
 
 
 ## Building
 ### Managing dependencies
-DuckDB extensions uses VCPKG for dependency management. Enabling VCPKG is very simple: follow the [installation instructions](https://vcpkg.io/en/getting-started) or just run the following:
-```shell
-git clone https://github.com/Microsoft/vcpkg.git
-./vcpkg/bootstrap-vcpkg.sh
-export VCPKG_TOOLCHAIN_PATH=`pwd`/vcpkg/scripts/buildsystems/vcpkg.cmake
-```
-Note: VCPKG is only required for extensions that want to rely on it for dependency management. If you want to develop an extension without dependencies, or want to do your own dependency management, just skip this step. Note that the example extension uses VCPKG to build with a dependency for instructive purposes, so when skipping this step the build may not work without removing the dependency.
 
 ### Build steps
 Now to build the extension, run:
@@ -38,25 +34,15 @@ The main binaries that will be built are:
 ```sh
 ./build/release/duckdb
 ./build/release/test/unittest
-./build/release/extension/dummy_extension/dummy_extension.duckdb_extension
+./build/release/extension/lineage_extension/lineage_extension.duckdb_extension
 ```
 - `duckdb` is the binary for the duckdb shell with the extension code automatically loaded.
 - `unittest` is the test runner of duckdb. Again, the extension is already linked into the binary.
-- `dummy_extension.duckdb_extension` is the loadable binary as it would be distributed.
+- `lineage_extension.duckdb_extension` is the loadable binary as it would be distributed.
 
 ## Running the extension
 To run the extension code, simply start the shell with `./build/release/duckdb`.
 
-Now we can use the features from the extension directly in DuckDB. The template contains a single scalar function `dummy_extension()` that takes a string arguments and returns a string:
-```
-D select dummy_extension('Jane') as result;
-┌───────────────┐
-│    result     │
-│    varchar    │
-├───────────────┤
-│ Dummy_extension Jane 🐥 │
-└───────────────┘
-```
 
 ## Running the tests
 Different tests can be created for DuckDB extensions. The primary way of testing DuckDB extensions should be the SQL tests in `./test/sql`. These SQL tests can be run using:
@@ -93,6 +79,6 @@ DuckDB. To specify a specific version, you can pass the version instead.
 
 After running these steps, you can install and load your extension using the regular INSTALL/LOAD commands in DuckDB:
 ```sql
-INSTALL dummy_extension
-LOAD dummy_extension
+INSTALL lineage
+LOAD lineage
 ```

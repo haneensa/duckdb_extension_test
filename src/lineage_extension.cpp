@@ -1,6 +1,8 @@
 #define DUCKDB_EXTENSION_MAIN
-#include "dummy_extension_extension.hpp"
-#include "physical_dummy_operator.hpp"
+#include "lineage_extension.hpp"
+#include "lineage_reader.hpp"
+#include "lineage_manager.hpp"
+#include "logical_lineage_operator.hpp"
 #include "duckdb/main/config.hpp"
 #include "duckdb/catalog/catalog.hpp"
 #include "duckdb/catalog/catalog_entry/aggregate_function_catalog_entry.hpp"
@@ -8,52 +10,18 @@
 #include "duckdb/planner/operator/logical_aggregate.hpp"
 #include "duckdb/function/aggregate_state.hpp"
 #include "duckdb/planner/operator/logical_get.hpp"
+#include "duckdb/catalog/catalog_entry/duck_table_entry.hpp"
+#include "duckdb/parser/expression_util.hpp"
+#include "duckdb/main/extension_util.hpp"
 #include <iostream>
 
 namespace duckdb {
 
-idx_t DummyState::rowid_idx = 0;
-bool DummyState::in_group_by = false;
-idx_t DummyState::table_idx = 0;
-bool DummyState::first_projection_done = false;
+idx_t LineageState::rowid_idx = 0;
+bool LineageState::in_group_by = false;
+idx_t LineageState::table_idx = 0;
+bool LineageState::first_projection_done = false;
 
-LogicalDummyOperator::LogicalDummyOperator(vector<LogicalType> types, idx_t estimated_cardinality) {
-    std::cout << "DummyLineageOperator constructor - type count: " << types.size() << "\n";
-    this->estimated_cardinality = estimated_cardinality;
-}
-
-void LogicalDummyOperator::ResolveTypes() {
-    std::cout << "[DEBUG] DummyLineageOperator::ResolveTypes - entry\n";
-    if (children.empty()) {
-        std::cout << "[DEBUG] No children in DummyLineageOperator::ResolveTypes\n";
-        return;
-    }
-    // Copy types from child and log them
-    types = children[0]->types;
-    types.pop_back();
-    types.push_back(LogicalType::ROW_TYPE);
-    for (auto &type : types) {
-        std::cout << type.ToString() << " ";
-    }
-    std::cout << "\n";
-    std::cout << "[DEBUG] DummyLineageOperator::ResolveTypes - exit\n";
-}
-
-vector<ColumnBinding> LogicalDummyOperator::GetColumnBindings() {
-  std::cout << "[DEBUG] DummyLineageOperator::GetColumnBindings - entry\n";
-  if (children.empty()) {
-     std::cout << "[DEBUG] No children in DummyLineageOperator::GetColumnBindings\n";
-     return {};
-  }
-  auto child_bindings = children[0]->GetColumnBindings();
-  std::cout << "[DEBUG] Child column bindings: ";
-  for (auto &binding : child_bindings) {
-      std::cout << binding.ToString() << " ";
-  }
-  std::cout << "\n";
-  std::cout << "[DEBUG] DummyLineageOperator::GetColumnBindings - exist\n";
-  return child_bindings;
-}
 
 AggregateFunction GetListFunction(ClientContext &context) {
     auto &catalog = Catalog::GetSystemCatalog(context);
@@ -73,15 +41,15 @@ void InjectLineageOperator(unique_ptr<LogicalOperator> &op,ClientContext &contex
         auto &get = op->Cast<LogicalGet>();
         get.AddColumnId(COLUMN_IDENTIFIER_ROW_ID);
         get.types.push_back(LogicalType::ROW_TYPE);
-        DummyState::table_idx = get.table_index;
-        DummyState::rowid_idx = get.types.size()-1;
+        LineageState::table_idx = get.table_index;
+        LineageState::rowid_idx = get.types.size()-1;
         // projection_ids index into column_ids. if any exist then reference new column
         if (!get.projection_ids.empty()) get.projection_ids.push_back(get.GetColumnIds().size()-1);
-        std::cout << "RowID injected in LogicalGet " << DummyState::rowid_idx << std::endl;
+        std::cout << "RowID injected in LogicalGet " << LineageState::rowid_idx << std::endl;
         std::cout << "LogicalGet types after injection: " << get.names.size() << " " << get.projection_ids.size() <<
           " " << get.returned_types.size() <<  " " << get.types.size() << " " << get.GetColumnIds().size() << "\n";
     } else if (op->type == LogicalOperatorType::LOGICAL_PROJECTION) {
-      int col_id = DummyState::rowid_idx;
+      int col_id = LineageState::rowid_idx;
       // HACK TO AVOID RUNNING THIS FOR ALL QUERIES
       // TODO: add pragma or function to indicate we want to add lineage to a query or not
       if (col_id == 0) return;
@@ -94,10 +62,10 @@ void InjectLineageOperator(unique_ptr<LogicalOperator> &op,ClientContext &contex
             std::cout << "[DEBUG] Modifying Aggregate operator\n";
             std::cout << "[DEBUG] Aggregate types before modification: " << aggr.types.size() << "\n";
             
-            DummyState::in_group_by = true;
+            LineageState::in_group_by = true;
             auto list_function = GetListFunction(context);
             auto rowid_colref = make_uniq_base<Expression, BoundReferenceExpression>(LogicalType::ROW_TYPE,
-                DummyState::rowid_idx);
+                LineageState::rowid_idx);
             vector<unique_ptr<Expression>> children;
             children.push_back(std::move(rowid_colref));
 
@@ -119,28 +87,29 @@ void InjectLineageOperator(unique_ptr<LogicalOperator> &op,ClientContext &contex
             // remove list(bigint) lineage type and use bigint instead
             aggr.types.pop_back();
             aggr.types.push_back(LogicalType::ROW_TYPE);
-            auto dummy = make_uniq<LogicalDummyOperator>(aggr.types, aggr.estimated_cardinality);
+            auto dummy = make_uniq<LogicalLineageOperator>(aggr.types, aggr.estimated_cardinality);
             dummy->AddChild(std::move(op));
 
             op = std::move(dummy);
             
-            std::cout << "[DEBUG] Aggregate operator modified and DummyLineage added\n";
+            std::cout << "[DEBUG] Aggregate operator modified and LineageLineage added\n";
         }
     }
 }
 
-std::string DummyExtensionExtension::Name() {
-    return "dummy_extension";
+std::string LineageExtension::Name() {
+    return "lineage";
 }
 
-void DummyExtensionExtension::Load(DuckDB &db) {
+
+void LineageExtension::Load(DuckDB &db) {
+
     auto optimizer_extension = make_uniq<OptimizerExtension>();
     optimizer_extension->optimize_function = [](OptimizerExtensionInput &input, 
                                             unique_ptr<LogicalOperator> &plan) {
-        DummyState::in_group_by = false;
-        DummyState::first_projection_done = false;
-        DummyState::rowid_idx = 0;
-        
+        LineageState::in_group_by = false;
+        LineageState::first_projection_done = false;
+        LineageState::rowid_idx = 0;
         std::cout << "Plan prior to modifications" << std::endl;
         std::cout << plan->ToString() << std::endl;
         InjectLineageOperator(plan, input.context);
@@ -149,17 +118,23 @@ void DummyExtensionExtension::Load(DuckDB &db) {
         // TODO: inject lineage op at the root of the plan to extract any annotation columns
     };
 
-    db.instance->config.optimizer_extensions.emplace_back(*optimizer_extension);
-    std::cout << "Dummy extension loaded successfully.\n";
+    auto &db_instance = *db.instance;
+    db_instance.config.optimizer_extensions.emplace_back(*optimizer_extension);
+    std::cout << "Lineage extension loaded successfully.\n";
+    
+  	ExtensionUtil::RegisterFunction(db_instance, LineageScanFunction::GetFunctionSet());
+    // JSON replacement scan
+    auto &config = DBConfig::GetConfig(*db.instance);
+    config.replacement_scans.emplace_back(LineageScanFunction::ReadLineageReplacement);
 }
 
 extern "C" {
-DUCKDB_EXTENSION_API void dummy_extension_init(duckdb::DatabaseInstance &db) {
+DUCKDB_EXTENSION_API void lineage_init(duckdb::DatabaseInstance &db) {
     duckdb::DuckDB db_wrapper(db);
-    db_wrapper.LoadExtension<duckdb::DummyExtensionExtension>();
+    db_wrapper.LoadExtension<duckdb::LineageExtension>();
 }
 
-DUCKDB_EXTENSION_API const char *dummy_extension_version() {
+DUCKDB_EXTENSION_API const char *lineage_version() {
     return duckdb::DuckDB::LibraryVersion();
 }
 }

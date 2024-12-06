@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.5)
 
 # Set extension name
-set(TARGET_NAME dummy_extension)
+set(TARGET_NAME lineage)
 
 # Find OpenSSL
 find_package(OpenSSL REQUIRED)
@@ -11,8 +11,11 @@ include_directories(src/include)
 
 # List of source files
 set(EXTENSION_SOURCES 
-    src/dummy_extension_extension.cpp 
-    src/physical_dummy_operator.cpp
+    src/lineage_extension.cpp
+    src/lineage_manager.cpp
+    src/lineage_reader.cpp
+    src/physical_lineage_operator.cpp
+    src/logical_lineage_operator.cpp
 )
 
 # Build static and loadable extensions
