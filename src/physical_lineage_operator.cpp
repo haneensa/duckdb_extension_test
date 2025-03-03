@@ -1,3 +1,4 @@
+#include "lineage_extension.hpp"
 #include "physical_lineage_operator.hpp"
 #include "duckdb/common/vector_operations/vector_operations.hpp"
 #include "duckdb/execution/expression_executor.hpp"
@@ -10,26 +11,28 @@ PhysicalLineageOperator::PhysicalLineageOperator(vector<LogicalType> types, uniq
       children.push_back(std::move(child));
 }
 
-class LineageState : public OperatorState {
+class PhysicalLineageState : public OperatorState {
 public:
-  explicit LineageState(ExecutionContext &context) {
+  explicit PhysicalLineageState(ExecutionContext &context) {
   }
 
 public:
   void Finalize(const PhysicalOperator &op, ExecutionContext &context) override {
-    // TODO: gather lineage into global lineage
-    std::cout << "Debug lineage" << std::endl;
+    if (LineageState::capture == false) return;
+    std::cout << "Debug lineage " <<  lineage.size() << std::endl;
     for (auto& l : lineage) {
       std::cout << l.first.ToString(l.second) << std::endl;
     }
+
+    LineageState::lineage_store["TEST"] = std::move(lineage);
   }
-    
+   
   vector<std::pair<Vector, int>> lineage;
 };
 
 
 unique_ptr<OperatorState> PhysicalLineageOperator::GetOperatorState(ExecutionContext &context) const {
-	return make_uniq<LineageState>(context);
+	return make_uniq<PhysicalLineageState>(context);
 }
 
 OperatorResultType PhysicalLineageOperator::Execute(ExecutionContext &context,
@@ -37,7 +40,7 @@ OperatorResultType PhysicalLineageOperator::Execute(ExecutionContext &context,
                          DataChunk &chunk,
                          GlobalOperatorState &gstate,
                          OperatorState &state_p) const {
-  	auto &state = state_p.Cast<LineageState>();
+    auto &state = state_p.Cast<PhysicalLineageState>();
 
     std::cout << "Lineage:Execute:input" << std::endl;
     std::cout << input.ToString() << std::endl;

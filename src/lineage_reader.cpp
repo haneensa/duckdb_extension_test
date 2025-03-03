@@ -1,3 +1,4 @@
+#include "lineage_extension.hpp"
 #include "lineage_reader.hpp"
 
 namespace duckdb {
@@ -7,17 +8,20 @@ void LineageScanFunction::LineageScanImplementation(ClientContext &context, Tabl
   auto &data = data_p.local_state->Cast<LineageReadLocalState>();
   auto &gstate = data_p.global_state->Cast<LineageReadGlobalState>();
   auto &bind_data = data_p.bind_data->CastNoConst<LineageReadBindData>();
-  // TODO: access lineage data and return the in-memory lineage as relation
-  if (bind_data.chunk_count == 0) {
-    output.data[0].Sequence(10, 1, 1);
-    output.SetCardinality(1);
-  } else {
+  idx_t total_chunks = LineageState::lineage_store[bind_data.table_name].size();
+  std::cout << "Debug lineage_reader " << total_chunks << " " << bind_data.table_name << std::endl;
+  if (bind_data.chunk_count >= total_chunks) {
     return;
   }
-
+  output.data[0].Reference(LineageState::lineage_store[bind_data.table_name][bind_data.chunk_count].first);
+  idx_t count = LineageState::lineage_store[bind_data.table_name][bind_data.chunk_count].second;
+  output.SetCardinality(count);
+  
+  // std::cout << l.first.ToString(l.second) << std::endl;
   bind_data.chunk_count++;
 }
 
+// table name: lineage_scan(table_name)
 unique_ptr<FunctionData> LineageScanFunction::LineageScanBind(ClientContext &context, TableFunctionBindInput &input,
                                                 vector<LogicalType> &return_types, vector<string> &names) {
 
@@ -32,15 +36,7 @@ unique_ptr<FunctionData> LineageScanFunction::LineageScanBind(ClientContext &con
 			c = toupper(c);
   }
 
-  std::cout << "Querying for: " << query << std::endl;
-
-  // TODO: look for in-memory lineage the user requested
-  // init result.lineage with it
-
-  /*auto map = lineage_manager->table_lineage_op;
-  if (map.find(table_name_upper) != map.end()) {
-    auto lineage_op = map[table_name_upper];
-  }*/
+  result->table_name = query;
 
   return_types.emplace_back(LogicalType::ROW_TYPE);
   names.emplace_back("rowid");

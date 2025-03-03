@@ -11,9 +11,9 @@
 namespace duckdb {
 
 struct LineageReadBindData : public TableFunctionData {
-  // shared_ptr<OperatorLineage> lineage_op
   idx_t cardinality;
   idx_t chunk_count;
+  string table_name;
 
   void Initialize() {
     cardinality = 0;

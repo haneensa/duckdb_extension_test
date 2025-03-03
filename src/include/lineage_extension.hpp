@@ -20,6 +20,7 @@ struct LineageState {
    static bool in_group_by;
    static idx_t table_idx;
    static bool first_projection_done;
+   static std::unordered_map<string, vector<std::pair<Vector, int>>> lineage_store;
 };
 
 

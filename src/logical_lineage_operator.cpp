@@ -44,6 +44,7 @@ vector<ColumnBinding> LogicalLineageOperator::GetColumnBindings() {
 unique_ptr<PhysicalOperator> LogicalLineageOperator::CreatePlan(ClientContext &context, PhysicalPlanGenerator &generator) {
   // Get a plan for our child using the public API
   auto child = generator.CreatePlan(std::move(children[0]));
+  std::cout << "[DEBUG] LogicalLineageOperator::CreatePlan\n";
   std::cout << child->ToString() << std::endl;
   std::cout << types.size() << std::endl;
   return make_uniq<PhysicalLineageOperator>(types, std::move(child));

@@ -22,7 +22,7 @@ idx_t LineageState::rowid_idx = 0;
 bool LineageState::in_group_by = false;
 idx_t LineageState::table_idx = 0;
 bool LineageState::first_projection_done = false;
-
+std::unordered_map<string, vector<std::pair<Vector, int>>> LineageState::lineage_store;
 
 AggregateFunction GetListFunction(ClientContext &context) {
     auto &catalog = Catalog::GetSystemCatalog(context);
@@ -39,6 +39,7 @@ void InjectLineageOperator(unique_ptr<LogicalOperator> &op,ClientContext &contex
     }
 
     if (op->type == LogicalOperatorType::LOGICAL_GET) {
+        // leaf node. add rowid attribute to propagate.
         auto &get = op->Cast<LogicalGet>();
         get.AddColumnId(COLUMN_IDENTIFIER_ROW_ID);
         get.types.push_back(LogicalType::ROW_TYPE);
@@ -123,9 +124,12 @@ void LineageExtension::Load(DuckDB &db) {
         std::cout << "Plan prior to modifications" << std::endl;
         std::cout << plan->ToString() << std::endl;
         InjectLineageOperator(plan, input.context);
+        // inject lineage op at the root of the plan to extract any annotation columns
+        auto root = make_uniq<LogicalLineageOperator>(plan->types, plan->estimated_cardinality);
+        root->AddChild(std::move(plan));
+        plan = std::move(root);
         std::cout << "Plan after to modifications" << std::endl;
         std::cout << plan->ToString() << std::endl;
-        // TODO: inject lineage op at the root of the plan to extract any annotation columns
     };
 
     auto &db_instance = *db.instance;
