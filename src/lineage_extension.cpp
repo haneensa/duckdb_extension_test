@@ -17,6 +17,7 @@
 
 namespace duckdb {
 
+bool LineageState::capture = false;
 idx_t LineageState::rowid_idx = 0;
 bool LineageState::in_group_by = false;
 idx_t LineageState::table_idx = 0;
@@ -101,12 +102,21 @@ std::string LineageExtension::Name() {
     return "lineage";
 }
 
+static void PragmaEnableLineage(ClientContext &context, const FunctionParameters &parameters) {
+  LineageState::capture = true;
+}
+
+static void PragmaDisableLineage(ClientContext &context, const FunctionParameters &parameters) {
+  LineageState::capture = false;
+}
 
 void LineageExtension::Load(DuckDB &db) {
 
     auto optimizer_extension = make_uniq<OptimizerExtension>();
     optimizer_extension->optimize_function = [](OptimizerExtensionInput &input, 
                                             unique_ptr<LogicalOperator> &plan) {
+        if (LineageState::capture == false) return;
+
         LineageState::in_group_by = false;
         LineageState::first_projection_done = false;
         LineageState::rowid_idx = 0;
@@ -123,6 +133,11 @@ void LineageExtension::Load(DuckDB &db) {
     std::cout << "Lineage extension loaded successfully.\n";
     
   	ExtensionUtil::RegisterFunction(db_instance, LineageScanFunction::GetFunctionSet());
+
+    auto enable_lineage_fun = PragmaFunction::PragmaStatement("enable_lineage", PragmaEnableLineage);
+    auto disable_lineage_fun = PragmaFunction::PragmaStatement("disable_lineage", PragmaDisableLineage);
+    ExtensionUtil::RegisterFunction(db_instance, enable_lineage_fun);
+    ExtensionUtil::RegisterFunction(db_instance, disable_lineage_fun);
     // JSON replacement scan
     auto &config = DBConfig::GetConfig(*db.instance);
     config.replacement_scans.emplace_back(LineageScanFunction::ReadLineageReplacement);

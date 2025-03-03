@@ -15,6 +15,7 @@
 namespace duckdb {
 
 struct LineageState {
+   static bool capture;
    static idx_t rowid_idx;
    static bool in_group_by;
    static idx_t table_idx;
