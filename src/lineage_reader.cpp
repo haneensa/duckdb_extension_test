@@ -1,5 +1,7 @@
 #include "lineage_extension.hpp"
 #include "lineage_reader.hpp"
+#include "lineage_query.hpp"
+#include <regex>
 
 namespace duckdb {
 
@@ -8,16 +10,21 @@ void LineageScanFunction::LineageScanImplementation(ClientContext &context, Tabl
   auto &data = data_p.local_state->Cast<LineageReadLocalState>();
   auto &gstate = data_p.global_state->Cast<LineageReadGlobalState>();
   auto &bind_data = data_p.bind_data->CastNoConst<LineageReadBindData>();
-  idx_t total_chunks = LineageState::lineage_store[bind_data.table_name].size();
-  std::cout << "Debug lineage_reader " << total_chunks << " " << bind_data.table_name << std::endl;
-  if (bind_data.chunk_count >= total_chunks) {
-    return;
+  std::cout << "LineageScanImplementation: " << bind_data.operator_id << " " << bind_data.query_id << std::endl;
+  if (bind_data.query_id == -1) return;
+
+  if (bind_data.operator_id != -1) { // Access all operator lineage
+    idx_t total_chunks = LineageState::lineage_store[bind_data.table_name].size();
+    if (bind_data.chunk_count >= total_chunks) {
+      return;
+    }
+    output.data[0].Reference(LineageState::lineage_store[bind_data.table_name][bind_data.chunk_count].first);
+    idx_t count = LineageState::lineage_store[bind_data.table_name][bind_data.chunk_count].second;
+    output.SetCardinality(count);
+  } else {
+    // call the lineage querying function to get the end to end point lineage
+    bind_data.lquery_manager.GetNextChunk(output);
   }
-  output.data[0].Reference(LineageState::lineage_store[bind_data.table_name][bind_data.chunk_count].first);
-  idx_t count = LineageState::lineage_store[bind_data.table_name][bind_data.chunk_count].second;
-  output.SetCardinality(count);
-  
-  // std::cout << l.first.ToString(l.second) << std::endl;
   bind_data.chunk_count++;
 }
 
@@ -26,6 +33,7 @@ unique_ptr<FunctionData> LineageScanFunction::LineageScanBind(ClientContext &con
                                                 vector<LogicalType> &return_types, vector<string> &names) {
 
   auto result = make_uniq<LineageReadBindData>();
+  result->Initialize();
 
   if (input.inputs[0].IsNull()) {
     throw BinderException("lineage_scan first parameter cannot be NULL");
@@ -38,8 +46,54 @@ unique_ptr<FunctionData> LineageScanFunction::LineageScanBind(ClientContext &con
 
   result->table_name = query;
 
-  return_types.emplace_back(LogicalType::ROW_TYPE);
-  names.emplace_back("rowid");
+  std::regex pattern(R"_(\d+)_");
+  std::sregex_iterator it(query.begin(), query.end(), pattern);
+  std::sregex_iterator end;
+  while (it != end) {
+    result->operator_id = result->query_id;  // Shift second to first
+    result->query_id = std::stoi(it->str());  // Update second with new match
+    ++it;
+  }
+
+  std::cout << "Result: " << result->query_id << " " << result->operator_id << " " << std::endl;
+  result->lquery_manager.query_id = result->query_id;
+
+  auto list_values = ListValue::GetChildren(input.inputs[1]) ;
+	for (idx_t i = 0; i < list_values.size(); i++) {
+		auto &child = list_values[i];
+    result->lquery_manager.oids.push_back(child.GetValue<int>());
+	}
+
+  // if the string part == QUERY : then query end to end. 
+  // how to get type of the output? op1: 1D, op2: 1D, 
+  // each row is prov polynomial for that row. agg would have 1D since it is for a single output group
+  // its child if not another agg would be a 1D but here the dependency is for each element in parent, it maps to the element in the child
+  // if its another agg: each id in the parent list would result in an array
+  // values don't need to have uniform types. 
+  // I can predetermind the types for each pipeline
+  // agg_0: 1D, agg_1: 2D, agg_3: 2D, join_left: 1D, join_right: 1D, others: 1D
+  
+  // based on the type of the dependent, decide on the type of the output
+  if (result->operator_id != -1) {
+    if (LineageState::lineage_types[query] == LogicalOperatorType::LOGICAL_COMPARISON_JOIN) {
+      return_types.emplace_back(LogicalType::ROW_TYPE);
+      names.emplace_back("rowid_0");
+      return_types.emplace_back(LogicalType::ROW_TYPE);
+      names.emplace_back("rowid_1");
+    } else if (LineageState::lineage_types[query] == LogicalOperatorType::LOGICAL_AGGREGATE_AND_GROUP_BY) {
+      return_types.emplace_back(LogicalType::LIST(LogicalType::ROW_TYPE));
+      names.emplace_back("rowid");
+    } else {
+      return_types.emplace_back(LogicalType::ROW_TYPE);
+      names.emplace_back("rowid");
+    }
+  } else {
+    return_types.emplace_back(LogicalType::ROW_TYPE);
+    names.emplace_back("input");
+    return_types.emplace_back(LogicalType::LIST(LogicalType::ROW_TYPE));
+    // return_types.emplace_back(LogicalType::ROW_TYPE);
+    names.emplace_back("output");
+  }
   return std::move(result);
 }
 
@@ -58,10 +112,10 @@ unique_ptr<TableRef> LineageScanFunction::ReadLineageReplacement(ClientContext &
     optional_ptr<ReplacementScanData> data) {
   auto table_name = ReplacementScan::GetFullPath(input);
 
-  if (!ReplacementScan::CanReplace(table_name, {"lineage"})) {
+  if (!ReplacementScan::CanReplace(table_name, {"lineage_scan"})) {
     return nullptr;
   }
-
+  
   // if it has lineage as prefix
   auto table_function = make_uniq<TableFunctionRef>();
   vector<unique_ptr<ParsedExpression>> children;
@@ -91,7 +145,9 @@ unique_ptr<BaseStatistics> LineageScanFunction::ScanStats(ClientContext &context
 }
 
 TableFunctionSet LineageScanFunction::GetFunctionSet() {
-  TableFunction table_function("lineage_scan", {LogicalType::VARCHAR}, LineageScanImplementation,
+  // table_name/query_name: VARCHAR, lineage_ids: List(INT)
+  // operator_name_{query_id}_{operator_id}
+  TableFunction table_function("lineage_scan", {LogicalType::VARCHAR,  LogicalType::LIST(LogicalType::INTEGER)}, LineageScanImplementation,
       LineageScanBind, LineageScanInitGlobal, LineageScanInitLocal);
 
   table_function.statistics = ScanStats;

@@ -12,8 +12,9 @@ include_directories(src/include)
 # List of source files
 set(EXTENSION_SOURCES 
     src/lineage_extension.cpp
-    src/lineage_manager.cpp
     src/lineage_reader.cpp
+    src/lineage_meta.cpp
+    src/lineage_query.cpp
     src/physical_lineage_operator.cpp
     src/logical_lineage_operator.cpp
 )

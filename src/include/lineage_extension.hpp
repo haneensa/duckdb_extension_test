@@ -15,12 +15,14 @@
 namespace duckdb {
 
 struct LineageState {
+   static idx_t query_id;
+   static idx_t global_id;
    static bool capture;
-   static idx_t rowid_idx;
-   static bool in_group_by;
+   static bool debug;
    static idx_t table_idx;
-   static bool first_projection_done;
+   static std::unordered_map<string, LogicalOperatorType> lineage_types;
    static std::unordered_map<string, vector<std::pair<Vector, int>>> lineage_store;
+   static std::unordered_map<idx_t, vector<vector<std::pair<idx_t, LogicalOperatorType>>>> pipelines;
 };
 
 
@@ -28,7 +30,7 @@ class LineageExtension : public Extension {
 public:
    void Load(DuckDB &db) override;
    std::string Name() override;
-   std::string Version() const override { return "v0.0.1"; }
+   std::string Version() const override { return "v0.0.0"; }
 };
 
 } // namespace duckdb

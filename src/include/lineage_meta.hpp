@@ -11,37 +11,31 @@
 
 namespace duckdb {
 
-struct LineageReadBindData : public TableFunctionData {
+struct LineageMetaBindData : public TableFunctionData {
   idx_t cardinality;
   idx_t chunk_count;
-  string table_name;
-  idx_t query_id;
-  int operator_id;
-  LineageQuery lquery_manager;
 
   void Initialize() {
     cardinality = 0;
     chunk_count = 0;
-    operator_id = -1;
-    query_id = -1;
   }
 };
 
-struct LineageReadLocalState : public LocalTableFunctionState {
+struct LineageMetaLocalState : public LocalTableFunctionState {
 };
 
-struct LineageReadGlobalState : public GlobalTableFunctionState {
+struct LineageMetaGlobalState : public GlobalTableFunctionState {
 };
 
-class LineageScanFunction {
+class LineageMetaFunction {
   public:
-    static void LineageScanImplementation(ClientContext &context, TableFunctionInput &data_p, DataChunk &output);
-    static unique_ptr<FunctionData> LineageScanBind(ClientContext &context, TableFunctionBindInput &input,
+    static void LineageMetaImplementation(ClientContext &context, TableFunctionInput &data_p, DataChunk &output);
+    static unique_ptr<FunctionData> LineageMetaBind(ClientContext &context, TableFunctionBindInput &input,
                                                     vector<LogicalType> &return_types, vector<string> &names);
-    static unique_ptr<GlobalTableFunctionState> LineageScanInitGlobal(ClientContext &context,
+    static unique_ptr<GlobalTableFunctionState> LineageMetaInitGlobal(ClientContext &context,
                                                                       TableFunctionInitInput &input);
     static unique_ptr<LocalTableFunctionState>
-    LineageScanInitLocal(ExecutionContext &context, TableFunctionInitInput &input, GlobalTableFunctionState *gstate_p);
+    LineageMetaInitLocal(ExecutionContext &context, TableFunctionInitInput &input, GlobalTableFunctionState *gstate_p);
     static unique_ptr<TableRef> ReadLineageReplacement(ClientContext &context, ReplacementScanInput &input,
         optional_ptr<ReplacementScanData> data);
     static TableFunctionSet GetFunctionSet();

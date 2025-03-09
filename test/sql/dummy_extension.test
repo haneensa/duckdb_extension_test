@@ -1,23 +1,17 @@
-# name: test/sql/dummy_extension.test
-# description: test dummy_extension extension
-# group: [dummy_extension]
+# name: test/sql/lineage_extension.test
+# description: test lineage extension
+# group: [lineage_extension]
 
 # Before we load the extension, this will fail
 statement error
-SELECT dummy_extension('Sam');
+SELECT * from lineage_scan(1, 'FILTER_1', [1, 2, 3]);
 ----
-Catalog Error: Scalar Function with name dummy_extension does not exist!
+Catalog Error: Scalar Function with name lineage_scan does not exist!
 
 # Require statement will ensure this test is run with this extension loaded
-require dummy_extension
+require lineage
 
 # Confirm the extension works
 query I
-SELECT dummy_extension('Sam');
+SELECT * from lineage_scan(1, 'FILTER_1', [1, 2, 3]);
 ----
-DummyExtension Sam 🐥
-
-query I
-SELECT dummy_extension_openssl_version('Michael') ILIKE 'DummyExtension Michael, my linked OpenSSL version is OpenSSL%';
-----
-true
