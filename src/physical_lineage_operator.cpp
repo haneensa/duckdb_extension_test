@@ -18,7 +18,7 @@ PhysicalLineageOperator::PhysicalLineageOperator(vector<LogicalType> types, uniq
 class PhysicalLineageState : public OperatorState {
 public:
   explicit PhysicalLineageState(ExecutionContext &context, string table_name,
-      LogicalOperatorType dependent_type) : table_name(table_name), dependent_type(dependent_type) {
+      LogicalOperatorType dependent_type) : offset(0), table_name(table_name), dependent_type(dependent_type) {
   }
 
 public:
@@ -33,12 +33,18 @@ public:
 
     LineageState::lineage_types[table_name] = dependent_type;
     LineageState::lineage_store[table_name] = std::move(lineage);
+    if (dependent_type == LogicalOperatorType::LOGICAL_COMPARISON_JOIN) {
+      LineageState::lineage_store[table_name+"_right"] = std::move(lineage_right);
+    }
   }
    
+  // todo: maybe decompose it into two arrays? one for Vectors one for size
+  // this way we don't have to duplicate size for the right side
   vector<std::pair<Vector, int>> lineage;
   vector<std::pair<Vector, int>> lineage_right;
   string table_name;
   LogicalOperatorType dependent_type;
+  idx_t offset;
 };
 
 
@@ -83,7 +89,8 @@ OperatorResultType PhysicalLineageOperator::Execute(ExecutionContext &context,
 
     if (!is_root) {
       // This is not the root, reindex complex annotations
-      chunk.data.back().Sequence(0, 1, input.size());
+      chunk.data.back().Sequence(state.offset, 1, input.size());
+      state.offset += input.size();
     }
     
     

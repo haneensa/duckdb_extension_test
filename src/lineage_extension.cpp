@@ -1,3 +1,6 @@
+// q2, q15, q16, q17, q18, q20 -> issues with binding, q4, q21 -> querying
+// simple agg: q6, q14, q19
+// q13: check if there are null values
 #define DUCKDB_EXTENSION_MAIN
 #include "lineage_extension.hpp"
 #include "lineage_reader.hpp"
@@ -18,9 +21,6 @@
 #include "duckdb/parser/expression_util.hpp"
 #include "duckdb/main/extension_util.hpp"
 #include <iostream>
-// 1. create SQL to query id mapping
-// 2. create lineage_meta function that returns the query ids associated with a query
-// 3. use query id to access lineage
 
 namespace duckdb {
 
@@ -29,6 +29,7 @@ idx_t LineageState::global_id = 0;
 bool LineageState::capture = false;
 bool LineageState::debug = true;
 idx_t LineageState::table_idx = 0;
+std::unordered_map<string, idx_t> LineageState::op_pipelines;
 std::unordered_map<string, vector<std::pair<Vector, int>>> LineageState::lineage_store;
 std::unordered_map<string, LogicalOperatorType> LineageState::lineage_types;
 std::unordered_map<idx_t, vector<vector<std::pair<idx_t, LogicalOperatorType>>>> LineageState::pipelines;
@@ -124,9 +125,11 @@ void InitPipelines(unique_ptr<LogicalOperator> &plan, idx_t query_id, idx_t pipe
     }
 
     auto &op = plan->Cast<LogicalLineageOperator>();
+    string table_name = "PHYSICAL_LINEAGE_" + to_string(query_id) + "_" + to_string(op.operator_id);
     switch (op.dependent_type) {
       case  LogicalOperatorType::LOGICAL_GET: {
         std::cout << "1. InitPipelines add: " << pipeline_idx << " " << op.operator_id << " " << EnumUtil::ToChars<LogicalOperatorType>(op.dependent_type) << std::endl;
+        LineageState::op_pipelines[table_name] = pipeline_idx;
         LineageState::pipelines[query_id][pipeline_idx].push_back({op.operator_id, op.dependent_type});
         break;
       } case LogicalOperatorType::LOGICAL_FILTER: {
@@ -135,6 +138,7 @@ void InitPipelines(unique_ptr<LogicalOperator> &plan, idx_t query_id, idx_t pipe
       } case LogicalOperatorType::LOGICAL_AGGREGATE_AND_GROUP_BY: {
         std::cout << "2. InitPipelines add: " << pipeline_idx << " " << op.operator_id << " " << EnumUtil::ToChars<LogicalOperatorType>(op.dependent_type) << std::endl;
         LineageState::pipelines[query_id][pipeline_idx].push_back({op.operator_id, op.dependent_type});
+        LineageState::op_pipelines[table_name] = pipeline_idx;
         InitPipelines(plan->children[0], query_id, pipeline_idx);
         break;
       } case LogicalOperatorType::LOGICAL_PROJECTION: {
@@ -152,9 +156,12 @@ void InitPipelines(unique_ptr<LogicalOperator> &plan, idx_t query_id, idx_t pipe
         idx_t new_pipeline_idx = LineageState::pipelines[query_id].size();
         // new pipeline use as to scan
         LineageState::pipelines[query_id].emplace_back();
-        std::cout << "4. InitPipelines add: " << new_pipeline_idx << " " << op.operator_id << " " << EnumUtil::ToChars<LogicalOperatorType>(op.dependent_type) << std::endl;
+        std::cout << "4. InitPipelines add: " << table_name << " " << new_pipeline_idx << " " << EnumUtil::ToChars<LogicalOperatorType>(op.dependent_type) << std::endl;
         LineageState::pipelines[query_id][new_pipeline_idx].push_back({op.operator_id, op.dependent_type});
         
+        LineageState::op_pipelines[table_name] = pipeline_idx;
+        LineageState::op_pipelines[table_name + "_right"] = new_pipeline_idx;
+        std::cout << "pipeline: " << table_name << " " << pipeline_idx << " " << new_pipeline_idx << std::endl;
         InitPipelines(plan->children[0]->children[0], query_id, pipeline_idx);
         InitPipelines(plan->children[0]->children[1], query_id, new_pipeline_idx);
       } default: {}

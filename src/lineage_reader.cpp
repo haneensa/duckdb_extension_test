@@ -90,9 +90,15 @@ unique_ptr<FunctionData> LineageScanFunction::LineageScanBind(ClientContext &con
   } else {
     return_types.emplace_back(LogicalType::ROW_TYPE);
     names.emplace_back("input");
-    return_types.emplace_back(LogicalType::LIST(LogicalType::ROW_TYPE));
-    // return_types.emplace_back(LogicalType::ROW_TYPE);
-    names.emplace_back("output");
+    // for each pipeline
+    idx_t n_pipelines = LineageState::pipelines[result->query_id].size();
+    for (int i=0; i < n_pipelines; ++i) {
+      return_types.emplace_back(LogicalType::LIST(LogicalType::ROW_TYPE));
+      // return_types.emplace_back(LogicalType::ROW_TYPE);
+      names.emplace_back("output_"+to_string(i));
+    }
+    std::cout << " init types: " << return_types.size() << " " << names.size() << std::endl;
+
   }
   return std::move(result);
 }

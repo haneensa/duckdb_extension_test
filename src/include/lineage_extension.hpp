@@ -20,6 +20,7 @@ struct LineageState {
    static bool capture;
    static bool debug;
    static idx_t table_idx;
+   static std::unordered_map<string, idx_t> op_pipelines;
    static std::unordered_map<string, LogicalOperatorType> lineage_types;
    static std::unordered_map<string, vector<std::pair<Vector, int>>> lineage_store;
    static std::unordered_map<idx_t, vector<vector<std::pair<idx_t, LogicalOperatorType>>>> pipelines;
