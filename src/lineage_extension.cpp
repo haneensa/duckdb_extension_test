@@ -1,6 +1,13 @@
-// q2, q15, q16, q17, q18, q20 -> issues with binding, q4, q21 -> querying
-// simple agg: q6, q14, q19
-// q13: check if there are null values
+// safe: q1, q2, q3, q4, q5, q6, q7, q8, q9, q10, q11, q12, q13, q14, q15, q17, q18, q19, q20, q21
+// 2: duckdb.duckdb.InternalException: INTERNAL Error: Failed to bind column reference "n_name" [3.2] (bindings: {#[15.0], #[2.1], #[2.2], #[0.0], #[2.3], #[1.0], #[1.2], #[1.3], #[1.4], #[1.5], #[15.0]})
+// 20: semi, right_semi,delim_join (right) duckdb.duckdb.InternalException: INTERNAL Error: Failed to bind column reference "ps_suppkey" [8.2] (bindings: {#[23.0], #[8.0], #[8.1], #[23.0]})
+// 17: delim join right duckdb.duckdb.InternalException: INTERNAL Error: Failed to bind column reference "l_extendedprice" [0.2] (bindings: {#[9.0], #[0.0], #[0.1], #[9.0]})
+//    new: duckdb.duckdb.InternalException: INTERNAL Error: Vector::Reference used on vector of different type
+//
+// 22: delim_join right_anti + mark join (duckdb.duckdb.InternalException: INTERNAL Error: Vector::Reference used on vector of different type)
+// q16 filter expression after mark join-> duckdb.duckdb.InternalException: INTERNAL Error: Vector::Reference used on vector of different type
+// 4 and 21 are the same (right delim join) (NEED TO FIGURE HOW to agg rowids)
+// TODO: need to detect a filter with subquery. then pull up the lineage 
 #define DUCKDB_EXTENSION_MAIN
 #include "lineage_extension.hpp"
 #include "lineage_reader.hpp"
@@ -10,7 +17,10 @@
 #include "duckdb/catalog/catalog.hpp"
 #include "duckdb/catalog/catalog_entry/aggregate_function_catalog_entry.hpp"
 #include "duckdb/optimizer/optimizer.hpp"
+#include "duckdb/planner/operator/logical_cteref.hpp"
 #include "duckdb/planner/expression/bound_reference_expression.hpp"
+#include "duckdb/planner/operator/logical_column_data_get.hpp"
+#include "duckdb/planner/operator/logical_delim_get.hpp"
 #include "duckdb/planner/operator/logical_aggregate.hpp"
 #include "duckdb/planner/operator/logical_order.hpp"
 #include "duckdb/planner/operator/logical_filter.hpp"
@@ -27,7 +37,7 @@ namespace duckdb {
 idx_t LineageState::query_id = 0;
 idx_t LineageState::global_id = 0;
 bool LineageState::capture = false;
-bool LineageState::debug = true;
+bool LineageState::debug = false;
 idx_t LineageState::table_idx = 0;
 std::unordered_map<string, idx_t> LineageState::op_pipelines;
 std::unordered_map<string, vector<std::pair<Vector, int>>> LineageState::lineage_store;
@@ -51,69 +61,6 @@ AggregateFunction GetListFunction(ClientContext &context) {
 //     1) Prov Polynomials most use cases they don't want to take the data out, just evaluate the polynomial. -> FaDE like
 //     Lineage(Q1, oid, tname) -> list of ids for the table
 //     Lineage(Q1, oid) -> for each table name list of ids
-void InitPipelinesOld(unique_ptr<LogicalOperator> &plan, idx_t query_id, idx_t pipeline_idx) {
-    if (!plan) return;
-    idx_t operator_id = 0; // maintain mapping
-    switch (plan->type) {
-      case  LogicalOperatorType::LOGICAL_GET: {
-        std::cout << "InitPipelinesOld add: " << pipeline_idx << " " << operator_id << " " << EnumUtil::ToChars<LogicalOperatorType>(plan->type) << std::endl;
-        LineageState::pipelines[query_id][pipeline_idx].push_back({operator_id, plan->type});
-        break;
-      } case LogicalOperatorType::LOGICAL_FILTER: {
-      } case LogicalOperatorType::LOGICAL_TOP_N: {
-      } case LogicalOperatorType::LOGICAL_ORDER_BY: {
-      } case LogicalOperatorType::LOGICAL_AGGREGATE_AND_GROUP_BY: {
-        std::cout << "InitPipelinesOld add: " << pipeline_idx << " " << operator_id << " " << EnumUtil::ToChars<LogicalOperatorType>(plan->type) << std::endl;
-        LineageState::pipelines[query_id][pipeline_idx].push_back({operator_id, plan->type});
-        InitPipelinesOld(plan->children[0], query_id, pipeline_idx);
-        break;
-      } case LogicalOperatorType::LOGICAL_PROJECTION: {
-        InitPipelinesOld(plan->children[0], query_id, pipeline_idx);
-        break;
-      } case LogicalOperatorType::LOGICAL_DELIM_JOIN: {
-        /*
-          if (!op->delim_handled) {
-            // TODO handle multithreading here?
-            idx_t thread_id = -1;
-
-            // set this child to join's child to appropriately line up chunk scan lineage
-            dynamic_cast<PhysicalDelimJoin *>(op)->join->children[0] = move(op->children[0]);
-
-            // distinct input is delim join input
-            // distinct should be the input to delim scan
-            op->lineage_op[thread_id]->children[2]->children.push_back(op->lineage_op[thread_id]->children[0]);
-
-            // chunk scan input is delim join input
-            op->lineage_op[thread_id]->children[1]->children[1] = op->lineage_op[thread_id]->children[0];
-
-            // we only want to do the child reordering once
-            op->delim_handled = true;
-          }
-          return GenerateCustomLineagePlan(dynamic_cast<PhysicalDelimJoin *>(op)->join.get(), cxt, lineage_ids, move(left), simple_agg_flag, pipelines);
-         */
-        break;
-      } case LogicalOperatorType::LOGICAL_ASOF_JOIN: {
-      } case LogicalOperatorType::LOGICAL_CROSS_PRODUCT: {
-      } case LogicalOperatorType::LOGICAL_COMPARISON_JOIN: {
-        std::cout << "InitPipelines add: " << pipeline_idx << " " << operator_id << " " << EnumUtil::ToChars<LogicalOperatorType>(plan->type) << std::endl;
-        LineageState::pipelines[query_id][pipeline_idx].push_back({operator_id, plan->type});
-
-        idx_t new_pipeline_idx = LineageState::pipelines[query_id].size();
-        // new pipeline use as to scan
-        LineageState::pipelines[query_id].emplace_back();
-        std::cout << "InitPipelines add: " << new_pipeline_idx << " " << operator_id << " " << EnumUtil::ToChars<LogicalOperatorType>(plan->type) << std::endl;
-        LineageState::pipelines[query_id][new_pipeline_idx].push_back({operator_id, plan->type});
-        std::cout << "InitPipelines post " << plan->children.size() << std::endl;
-        
-        InitPipelinesOld(plan->children[0], query_id, pipeline_idx);
-        InitPipelinesOld(plan->children[1], query_id, new_pipeline_idx);
-        break;
-      } default: {
-        std::cout << "InitPipelines no match" << EnumUtil::ToChars<LogicalOperatorType>(plan->type) << std::endl;
-      }
-    }
-
-}
 void InitPipelines(unique_ptr<LogicalOperator> &plan, idx_t query_id, idx_t pipeline_idx) {
     if (!plan) return;
     if (plan->type != LogicalOperatorType::LOGICAL_EXTENSION_OPERATOR) {
@@ -128,7 +75,8 @@ void InitPipelines(unique_ptr<LogicalOperator> &plan, idx_t query_id, idx_t pipe
     string table_name = "PHYSICAL_LINEAGE_" + to_string(query_id) + "_" + to_string(op.operator_id);
     switch (op.dependent_type) {
       case  LogicalOperatorType::LOGICAL_GET: {
-        std::cout << "1. InitPipelines add: " << pipeline_idx << " " << op.operator_id << " " << EnumUtil::ToChars<LogicalOperatorType>(op.dependent_type) << std::endl;
+        if (LineageState::debug)
+          std::cout << "1. InitPipelines add: " << pipeline_idx << " " << op.operator_id << " " << EnumUtil::ToChars<LogicalOperatorType>(op.dependent_type) << std::endl;
         LineageState::op_pipelines[table_name] = pipeline_idx;
         LineageState::pipelines[query_id][pipeline_idx].push_back({op.operator_id, op.dependent_type});
         break;
@@ -136,6 +84,7 @@ void InitPipelines(unique_ptr<LogicalOperator> &plan, idx_t query_id, idx_t pipe
       } case LogicalOperatorType::LOGICAL_TOP_N: {
       } case LogicalOperatorType::LOGICAL_ORDER_BY: {
       } case LogicalOperatorType::LOGICAL_AGGREGATE_AND_GROUP_BY: {
+      if (LineageState::debug)
         std::cout << "2. InitPipelines add: " << pipeline_idx << " " << op.operator_id << " " << EnumUtil::ToChars<LogicalOperatorType>(op.dependent_type) << std::endl;
         LineageState::pipelines[query_id][pipeline_idx].push_back({op.operator_id, op.dependent_type});
         LineageState::op_pipelines[table_name] = pipeline_idx;
@@ -149,6 +98,7 @@ void InitPipelines(unique_ptr<LogicalOperator> &plan, idx_t query_id, idx_t pipe
       } case LogicalOperatorType::LOGICAL_ASOF_JOIN: {
       } case LogicalOperatorType::LOGICAL_CROSS_PRODUCT: {
       } case LogicalOperatorType::LOGICAL_COMPARISON_JOIN: {
+      if (LineageState::debug)
         std::cout << "3. InitPipelines add: " << pipeline_idx << " " << op.operator_id << " "
           << EnumUtil::ToChars<LogicalOperatorType>(op.dependent_type) << std::endl;
         LineageState::pipelines[query_id][pipeline_idx].push_back({op.operator_id, op.dependent_type});
@@ -156,11 +106,13 @@ void InitPipelines(unique_ptr<LogicalOperator> &plan, idx_t query_id, idx_t pipe
         idx_t new_pipeline_idx = LineageState::pipelines[query_id].size();
         // new pipeline use as to scan
         LineageState::pipelines[query_id].emplace_back();
+      if (LineageState::debug)
         std::cout << "4. InitPipelines add: " << table_name << " " << new_pipeline_idx << " " << EnumUtil::ToChars<LogicalOperatorType>(op.dependent_type) << std::endl;
         LineageState::pipelines[query_id][new_pipeline_idx].push_back({op.operator_id, op.dependent_type});
         
         LineageState::op_pipelines[table_name] = pipeline_idx;
         LineageState::op_pipelines[table_name + "_right"] = new_pipeline_idx;
+      if (LineageState::debug)
         std::cout << "pipeline: " << table_name << " " << pipeline_idx << " " << new_pipeline_idx << std::endl;
         InitPipelines(plan->children[0]->children[0], query_id, pipeline_idx);
         InitPipelines(plan->children[0]->children[1], query_id, new_pipeline_idx);
@@ -170,6 +122,74 @@ void InitPipelines(unique_ptr<LogicalOperator> &plan, idx_t query_id, idx_t pipe
 
 }
 
+// auto lop = make_uniq<LogicalLineageOperator>(op->estimated_cardinality, LineageState::global_id++, query_id, op->type, 0, 0);
+idx_t ProcessJoin(unique_ptr<LogicalOperator> &op, vector<idx_t>& rowids, idx_t query_id) {
+  auto &join = op->Cast<LogicalComparisonJoin>();
+  idx_t left_col_id = 0;
+  idx_t right_col_id = 0;
+  if (LineageState::debug)
+  std::cout << "Process join: " << EnumUtil::ToChars<JoinType>(join.join_type) << std::endl;
+  //std::cout << "LEFT " << join.children[0]->ToString() << std::endl;
+  //std::cout << "RIGHT " << join.children[1]->ToString() << std::endl;
+  if (join.join_type == JoinType::RIGHT_SEMI || join.join_type == JoinType::RIGHT_ANTI) {
+    if (LineageState::debug)
+    std::cout << "inject right semi join: " << rowids[1] << " " << join.right_projection_map.size() << std::endl;
+    if (!join.right_projection_map.empty()) {
+      right_col_id = join.right_projection_map.size();
+      join.right_projection_map.push_back(rowids[1]);
+    } else {
+      right_col_id = rowids[1];
+    }
+
+    if (LineageState::debug)
+    std::cout << "-> " << left_col_id + right_col_id << " " << left_col_id << " " << right_col_id << " " << rowids[0] << " " << rowids[1] << " "
+      << join.left_projection_map.size() << " " << join.right_projection_map.size() << std::endl;
+    auto lop = make_uniq<LogicalLineageOperator>(op->estimated_cardinality, LineageState::global_id++, query_id, op->type, 0, right_col_id);
+    lop->AddChild(std::move(op));
+    op = std::move(lop);
+    return right_col_id;
+  }
+
+  if (!join.left_projection_map.empty()) {
+    left_col_id = join.left_projection_map.size();
+    join.left_projection_map.push_back(rowids[0]);
+  } else {
+    left_col_id = rowids[0];
+  }
+  
+  if (join.join_type == JoinType::MARK) {
+      if (LineageState::debug)
+    std::cout << "inject mark join: " << left_col_id << " " << join.left_projection_map.size() << std::endl;
+    auto lop = make_uniq<LogicalLineageOperator>(op->estimated_cardinality, LineageState::global_id++, query_id, op->type, left_col_id, 0);
+    lop->AddChild(std::move(op));
+    lop->mark_join = true;
+    op = std::move(lop);
+    // add projection?
+    return left_col_id + 1 /* bool col */;
+  } else if (join.join_type == JoinType::SEMI || join.join_type == JoinType::ANTI) {
+      if (LineageState::debug)
+    std::cout << "inject semi join: " << left_col_id << " " << join.left_projection_map.size() << std::endl;
+    auto lop = make_uniq<LogicalLineageOperator>(op->estimated_cardinality, LineageState::global_id++, query_id, op->type, left_col_id, 0);
+    lop->AddChild(std::move(op));
+    op = std::move(lop);
+    return left_col_id;
+  }
+
+  if (!join.right_projection_map.empty()) {
+    right_col_id = join.right_projection_map.size();
+    join.right_projection_map.push_back(rowids[1]);
+  } else {
+    right_col_id = rowids[1];
+  }
+
+      if (LineageState::debug)
+  std::cout << "-> " << left_col_id + right_col_id << " " << left_col_id << " " << right_col_id << " " << rowids[0] << " " << rowids[1] << " " << join.left_projection_map.size() << " " << join.right_projection_map.size() << std::endl;
+  auto lop = make_uniq<LogicalLineageOperator>(op->estimated_cardinality, LineageState::global_id++, query_id, op->type, left_col_id, right_col_id);
+  lop->AddChild(std::move(op));
+  op = std::move(lop);
+  return left_col_id + right_col_id;
+}
+
 idx_t InjectLineageOperator(unique_ptr<LogicalOperator> &op,ClientContext &context, idx_t query_id) {
     if (!op) return 0;
     vector<idx_t> rowids = {};
@@ -177,7 +197,13 @@ idx_t InjectLineageOperator(unique_ptr<LogicalOperator> &op,ClientContext &conte
         rowids.push_back( InjectLineageOperator(child, context,  query_id) );
     }
 
-    std::cout << op->GetName() << " " << LineageState::global_id << std::endl;
+    if (LineageState::debug) {
+      std::cout << "Inject: " << op->GetName() << " " << LineageState::global_id;
+      for (int i = 0; i < rowids.size(); ++i) {
+        std::cout << " -> " << rowids[i];
+      }
+      std::cout << std::endl;
+    }
     if (op->type == LogicalOperatorType::LOGICAL_GET) {
       // leaf node. add rowid attribute to propagate.
       auto &get = op->Cast<LogicalGet>();
@@ -194,21 +220,67 @@ idx_t InjectLineageOperator(unique_ptr<LogicalOperator> &op,ClientContext &conte
           << " " << get.names.size() << " " << get.projection_ids.size() <<
           " " << get.returned_types.size() <<  " " << get.types.size() << " " << get.GetColumnIds().size() << "\n";
       return col_id;
+    }  else if (op->type == LogicalOperatorType::LOGICAL_CHUNK_GET) { // CTE_SCAN too
+      // add lineage op to generate ids
+      auto& col = op->Cast<LogicalColumnDataGet>();
+      idx_t col_id = col.chunk_types.size();
+      if (LineageState::debug) std::cout << "chunk get " << col_id << std::endl;
+      auto lop = make_uniq<LogicalLineageOperator>(op->estimated_cardinality, LineageState::global_id++, query_id, op->type, col_id, 0);
+      lop->AddChild(std::move(op));
+      op = std::move(lop);
+      return col_id;
+    }  else if (op->type == LogicalOperatorType::LOGICAL_MATERIALIZED_CTE) { // CTE_SCAN too
+        if (LineageState::debug)  std::cout << " cte ? " << rowids[0] << " " << rowids[1] << std::endl;
+        return rowids[1];
+    }  else if (op->type == LogicalOperatorType::LOGICAL_CTE_REF) { // CTE_SCAN too
+      // add lineage op to generate ids
+      auto& col = op->Cast<LogicalCTERef>();
+      idx_t col_id = col.chunk_types.size();
+      if (LineageState::debug) std::cout << "cte ref " << col_id << " " << col.bound_columns[0] << " " << std::endl;
+      col.chunk_types.push_back(LogicalType::ROW_TYPE);
+      col.bound_columns.push_back("rowid");
+      //auto lop = make_uniq<LogicalLineageOperator>(op->estimated_cardinality, LineageState::global_id++, query_id, op->type, col_id, 0);
+      //lop->AddChild(std::move(op));
+      //op = std::move(lop);
+      return col_id;
     } else if (op->type == LogicalOperatorType::LOGICAL_FILTER) {
-      // assert rowids.size() == 1
-      // add row_type to projection_map
+      auto &filter = op->Cast<LogicalFilter>();
       int col_id = rowids[0];
       int new_col_id = col_id;
-      auto &filter = op->Cast<LogicalFilter>();
+
+      if (op->children[0]->type == LogicalOperatorType::LOGICAL_EXTENSION_OPERATOR) {
+        // check if the child is mark join
+        if (op->children[0]->Cast<LogicalLineageOperator>().mark_join) {
+            // pull up lineage op
+            auto lop = std::move(op->children[0]);
+            if (LineageState::debug)
+              std::cout << "pull up lineage op " << rowids[0] << " " 
+            << filter.expressions.size() << " " << filter.projection_map.size() << " " << 
+            lop->Cast<LogicalLineageOperator>().left_rid << std::endl;
+            lop->Cast<LogicalLineageOperator>().dependent_type = op->type;
+      
+            if (!filter.projection_map.empty()) {
+              filter.projection_map.push_back(col_id); 
+              new_col_id = filter.projection_map.size()-1; 
+            }
+            lop->Cast<LogicalLineageOperator>().left_rid = new_col_id;
+            op->children[0] = std::move(lop->children[0]);
+            lop->children[0] = std::move(op);
+            op = std::move(lop);
+            return rowids[0];
+        }
+      }
       if (!filter.projection_map.empty()) {
           filter.projection_map.push_back(col_id); 
           new_col_id = filter.projection_map.size()-1; 
       }
-      std::cout << "Filter " << filter.projection_map.size() << " " << col_id << " " << new_col_id << std::endl;
+      if (LineageState::debug)
+      std::cout << "Filter " << filter.expressions.size() << " " << filter.projection_map.size() << " " << col_id << " " << new_col_id << std::endl;
       return new_col_id;
     } else if (op->type == LogicalOperatorType::LOGICAL_ORDER_BY) {
       // it passes through child types. except if projections is not empty, then we need to add it
       auto &order = op->Cast<LogicalOrder>();
+      if (LineageState::debug)
       std::cout << "Order by " << order.projections.size() << " " << rowids[0] << std::endl;
       if (!order.projections.empty()) {
        // order.projections.push_back(); the rowid of child
@@ -225,7 +297,24 @@ idx_t InjectLineageOperator(unique_ptr<LogicalOperator> &op,ClientContext &conte
       if (LineageState::debug)
         std::cout << "[DEBUG] Projection types before modification: " << col_id << " " << new_col_id  << "\n";
       return new_col_id;
+    } else if (op->type == LogicalOperatorType::LOGICAL_DELIM_GET) {
+      // duplicate eliminated scan (output of distinct)
+      auto &get = op->Cast<LogicalDelimGet>();
+      if (LineageState::debug)
+        std::cout << "LogicalDelimGet types after injection: " << get.table_index << " " << get.chunk_types.size() << std::endl;
+      int col_id = get.chunk_types.size();
+      get.chunk_types.push_back(LogicalType::LIST(LogicalType::ROW_TYPE));
+      auto lop = make_uniq<LogicalLineageOperator>(op->estimated_cardinality, LineageState::global_id++, query_id, op->type, col_id, 0);
+      lop->AddChild(std::move(op));
+      op = std::move(lop);
+      return get.chunk_types.size()-1; // TODO: adjust once I adjust distinct types
     } else if (op->type == LogicalOperatorType::LOGICAL_DELIM_JOIN) {
+      // the JOIN right child, becomes right_delim_join child that is used as input to
+      // JOIN and DISTINCT
+      // 1) access to distinct to add LIST(rowid) expression
+      // 2) JOIN to add annotations from both sides
+      // the fist n childrens are n delim scans
+      return ProcessJoin(op, rowids, query_id);
     } else if (op->type == LogicalOperatorType::LOGICAL_ASOF_JOIN) {
     } else if (op->type == LogicalOperatorType::LOGICAL_CROSS_PRODUCT) {
     } else if (op->type == LogicalOperatorType::LOGICAL_COMPARISON_JOIN) {
@@ -233,28 +322,7 @@ idx_t InjectLineageOperator(unique_ptr<LogicalOperator> &op,ClientContext &conte
       // Propagate annotations from the left and right sides.
       // Add PhysicaLineage to extraxt the last two columns
       // and replace it with a single annotations column
-      auto &join = op->Cast<LogicalComparisonJoin>();
-      std::cout << EnumUtil::ToChars<JoinType>(join.join_type) << std::endl;
-      idx_t left_col_id = 0;
-      idx_t right_col_id = 0;
-      if (!join.left_projection_map.empty()) {
-        left_col_id = join.left_projection_map.size();
-		    join.left_projection_map.push_back(rowids[0]);
-      } else {
-        left_col_id = rowids[0];
-      }
-		  if (!join.right_projection_map.empty()) {
-        right_col_id = join.right_projection_map.size();
-		    join.right_projection_map.push_back(rowids[1]);
-      } else {
-        right_col_id = rowids[1];
-      }
-
-      std::cout << "-> " << left_col_id + right_col_id << " " << left_col_id << " " << right_col_id << " " << rowids[0] << " " << rowids[1] << " " << join.left_projection_map.size() << " " << join.right_projection_map.size() << std::endl;
-      auto lop = make_uniq<LogicalLineageOperator>(op->estimated_cardinality, LineageState::global_id++, query_id, op->type, left_col_id, right_col_id);
-      lop->AddChild(std::move(op));
-      op = std::move(lop);
-      return left_col_id + right_col_id;
+      return ProcessJoin(op, rowids, query_id);
     } else if (op->type == LogicalOperatorType::LOGICAL_AGGREGATE_AND_GROUP_BY) {
         auto &aggr = op->Cast<LogicalAggregate>();
        // if (!aggr.groups.empty()) {
@@ -311,10 +379,10 @@ void LineageExtension::Load(DuckDB &db) {
         auto root = make_uniq<LogicalLineageOperator>(plan->estimated_cardinality, LineageState::global_id++, query_id, plan->children[0]->type, final_rowid, 0, true);
         root->AddChild(std::move(plan));
         plan = std::move(root);
-        
-        std::cout << "Plan after to modifications" << std::endl;
-        std::cout << plan->ToString() << std::endl;
-        
+        if (LineageState::debug) {
+          std::cout << "Plan after to modifications" << std::endl;
+          std::cout << plan->ToString() << std::endl;
+        } 
         LineageState::pipelines[query_id].emplace_back();
         InitPipelines(plan, query_id, 0);
 

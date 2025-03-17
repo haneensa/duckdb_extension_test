@@ -1,6 +1,7 @@
 #include "lineage_extension.hpp"
 #include "physical_lineage_operator.hpp"
 #include "duckdb/common/vector_operations/vector_operations.hpp"
+#include "duckdb/planner/operator/logical_join.hpp"
 #include "duckdb/execution/expression_executor.hpp"
 #include "duckdb/parallel/thread_context.hpp"
 #include <iostream>
@@ -8,10 +9,10 @@
 namespace duckdb {
 PhysicalLineageOperator::PhysicalLineageOperator(vector<LogicalType> types, unique_ptr<PhysicalOperator> child,
         idx_t operator_id, idx_t query_id, LogicalOperatorType dependent_type,
-        idx_t left_rid, idx_t right_rid, bool is_root)
+        idx_t left_rid, idx_t right_rid, bool is_root, bool mark_join)
       : PhysicalOperator(PhysicalOperatorType::EXTENSION, std::move(types), child->estimated_cardinality),
       is_root(is_root), dependent_type(dependent_type), operator_id(operator_id), query_id(query_id),
-      left_rid(left_rid), right_rid(right_rid) {
+      left_rid(left_rid), right_rid(right_rid), mark_join(mark_join) {
       children.push_back(std::move(child));
 }
 
@@ -26,9 +27,9 @@ public:
     if (LineageState::capture == false) return;
     if (LineageState::lineage_store[table_name].size()) return;
 
-    if (true || LineageState::debug) {
+    if (LineageState::debug) {
       std::cout << "[DEBUG] persist lineage " <<  table_name << " " << lineage.size()
-        << " " << lineage_right.size() <<  std::endl;
+        << " " << lineage_right.size() << " " << EnumUtil::ToChars<LogicalOperatorType>(this->dependent_type) << std::endl;
     }
 
     LineageState::lineage_types[table_name] = dependent_type;
@@ -59,6 +60,43 @@ OperatorResultType PhysicalLineageOperator::Execute(ExecutionContext &context,
                          GlobalOperatorState &gstate,
                          OperatorState &state_p) const {
     auto &state = state_p.Cast<PhysicalLineageState>();
+   /*std::cout << "PhysicalLineageOperator: " <<  mark_join << " " << left_rid << " " << right_rid << " " << 
+     EnumUtil::ToChars<LogicalOperatorType>(this->dependent_type) << std::endl;
+    std::cout << input.ColumnCount() << std::endl;
+    for (auto &type : input.GetTypes()) { std::cout << type.ToString() << " "; }
+    std::cout << "\n";
+    std::cout << "-------" << std::endl;
+    std::cout << chunk.ToString() << std::endl;*/
+    if (left_rid == 0 && right_rid > 0) { // right semi join
+      chunk.SetCardinality(input);
+      chunk.Reference(input);
+      return OperatorResultType::NEED_MORE_INPUT;
+    }
+    if (this->dependent_type == LogicalOperatorType::LOGICAL_CHUNK_GET) { 
+      chunk.SetCapacity(input);
+      chunk.SetCardinality(input);
+      for (idx_t i = 0; i < left_rid; i++) {
+        chunk.data[i].Reference(input.data[i]);
+      }
+      chunk.data.back().Sequence(state.offset, 1, input.size());
+    //  std::cout << "pass through" << std::endl;
+     // std::cout << chunk.size() << std::endl;
+      return OperatorResultType::NEED_MORE_INPUT;
+    }
+    if (this->dependent_type == LogicalOperatorType::LOGICAL_DELIM_GET) {
+      chunk.SetCapacity(input);
+      chunk.SetCardinality(input);
+   //   std::cout << "here 1" << std::endl;
+      for (idx_t i = 0; i < left_rid; i++) {
+        chunk.data[i].Reference(input.data[i]);
+      }
+     // std::cout << "here 2" << std::endl;
+      //chunk.data.back().Sequence(state.offset, 1, input.size());
+     // std::cout << "pass through" << std::endl;
+      // std::cout << chunk.ToString() << std::endl;
+      // TODO: need to adjust the type of delim_get to include LIST(rowid)
+      return OperatorResultType::NEED_MORE_INPUT;
+    }
 
     // D_ASSERT();
 
@@ -68,17 +106,30 @@ OperatorResultType PhysicalLineageOperator::Execute(ExecutionContext &context,
     for (idx_t i = 0; i < left_rid; i++) {
       chunk.data[i].Reference(input.data[i]);
     }
+    
+    if (this->mark_join) {
+      //std::cout << "1" << std::endl;
+      chunk.data.back().Reference(input.data[left_rid]);
+      //std::cout << "2" << std::endl;
+      chunk.data[left_rid].Reference(input.data.back());
+//      std::cout << "3" << std::endl;
+      //std::cout << chunk.ToString() << std::endl;
+      return OperatorResultType::NEED_MORE_INPUT;
+    }
 
+    //std::cout << "here 1" << std::endl;
     for (idx_t i = left_rid+1; i < left_rid+right_rid+1; i++) {
       chunk.data[i-1].Reference(input.data[i]);
     }
 
     // Extract annotations payload from left input
-    idx_t annotation_col = left_rid;
-    Vector annotations(input.data[annotation_col].GetType());
-    VectorOperations::Copy(input.data[annotation_col], annotations, input.size(), 0, 0);
-    state.lineage.push_back({annotations, input.size()});
-    
+    if (left_rid > 0) {
+      idx_t annotation_col = left_rid;
+      Vector annotations(input.data[annotation_col].GetType());
+      VectorOperations::Copy(input.data[annotation_col], annotations, input.size(), 0, 0);
+      state.lineage.push_back({annotations, input.size()});
+    }
+
     if (this->dependent_type == LogicalOperatorType::LOGICAL_COMPARISON_JOIN) {
       // Extract annotations payload from the right input
       idx_t annotation_col = input.ColumnCount() - 1;

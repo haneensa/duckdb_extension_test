@@ -26,6 +26,7 @@ public:
     idx_t right_rid;
     LogicalOperatorType dependent_type;
     bool is_root;
+    bool mark_join;
 };
 
 }
