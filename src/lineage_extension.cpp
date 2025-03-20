@@ -7,8 +7,8 @@
 // 22: delim_join right_anti + mark join (duckdb.duckdb.InternalException: INTERNAL Error: Vector::Reference used on vector of different type)
 // q16 filter expression after mark join-> duckdb.duckdb.InternalException: INTERNAL Error: Vector::Reference used on vector of different type
 // 4 and 21 are the same (right delim join) (NEED TO FIGURE HOW to agg rowids)
-// TODO: need to detect a filter with subquery. then pull up the lineage 
 #define DUCKDB_EXTENSION_MAIN
+#include "duckdb/main/client_context.hpp"
 #include "lineage_extension.hpp"
 #include "lineage_reader.hpp"
 #include "lineage_meta.hpp"
@@ -38,6 +38,7 @@ idx_t LineageState::query_id = 0;
 idx_t LineageState::global_id = 0;
 bool LineageState::capture = false;
 bool LineageState::debug = false;
+bool LineageState::persist = true;
 idx_t LineageState::table_idx = 0;
 std::unordered_map<string, idx_t> LineageState::op_pipelines;
 std::unordered_map<string, vector<std::pair<Vector, int>>> LineageState::lineage_store;
@@ -289,6 +290,9 @@ idx_t InjectLineageOperator(unique_ptr<LogicalOperator> &op,ClientContext &conte
     } else if (op->type == LogicalOperatorType::LOGICAL_TOP_N) {
       // passes through child types
       return rowids[0];
+    } else if (op->type == LogicalOperatorType::LOGICAL_CREATE_TABLE) {
+      if (rowids.size() > 0)  return rowids[0];
+      else return 0;
     } else if (op->type == LogicalOperatorType::LOGICAL_PROJECTION) {
       // projection, just make sure we propagate any annotation columns
       int col_id = rowids[0];
@@ -355,6 +359,22 @@ std::string LineageExtension::Name() {
     return "lineage";
 }
 
+static void PragmaClearLineage(ClientContext &context, const FunctionParameters &parameters) {
+  LineageState::op_pipelines.clear();
+  LineageState::lineage_store.clear();
+  LineageState::lineage_types.clear();
+  LineageState::pipelines.clear();
+}
+
+static void PragmaEnablePersistLineage(ClientContext &context, const FunctionParameters &parameters) {
+  LineageState::persist = true;
+}
+
+static void PragmaDisablePersistLineage(ClientContext &context, const FunctionParameters &parameters) {
+  LineageState::persist = false;
+}
+
+
 static void PragmaEnableLineage(ClientContext &context, const FunctionParameters &parameters) {
   LineageState::capture = true;
 }
@@ -363,11 +383,46 @@ static void PragmaDisableLineage(ClientContext &context, const FunctionParameter
   LineageState::capture = false;
 }
 
+static void PragmaDisableFilterPushDown(ClientContext &context, const FunctionParameters &parameters) {
+  LineageGlobal::enable_filter_pushdown = false;
+  std::cout << "Disable Filter Pushdown" << std::endl;
+}
+
+static void PragmaEnableFilterPushDown(ClientContext &context, const FunctionParameters &parameters) {
+  LineageGlobal::enable_filter_pushdown = true;
+	std::cout << "Enable Filter Pushdown" << std::endl;
+}
+
+static string PragmaSetJoin(ClientContext &context, const FunctionParameters &parameters) {
+	string join_type = parameters.values[0].ToString();
+	D_ASSERT(join_type == "hash" || join_type == "merge" || join_type == "nl" || join_type == "index" || join_type == "block" || join_type == "clear");
+	std::cout << "Setting join type to " << join_type << " - be careful! Failures possible for hash/index join if non equijoin." << std::endl;
+	if (join_type == "clear") {
+    LineageGlobal::explicit_join_type = "";
+	} else {
+    LineageGlobal::explicit_join_type = join_type;
+	}
+  return "select 1";
+}
+
+static void PragmaSetAgg(ClientContext &context, const FunctionParameters &parameters) {
+	string agg_type = parameters.values[0].ToString();
+	D_ASSERT(agg_type == "perfect" || agg_type == "reg" || agg_type == "clear");
+	std::cout << "Setting agg type to " << agg_type << " - be careful! Failures possible if too many buckets (I think)." << std::endl;
+	if (agg_type == "clear") {
+    LineageGlobal::explicit_agg_type = "";
+	} else {
+    LineageGlobal::explicit_agg_type = agg_type;
+	}
+}
+
+
 void LineageExtension::Load(DuckDB &db) {
     auto optimizer_extension = make_uniq<OptimizerExtension>();
     optimizer_extension->optimize_function = [](OptimizerExtensionInput &input, 
                                             unique_ptr<LogicalOperator> &plan) {
-        if (LineageState::capture == false || plan->type == LogicalOperatorType::LOGICAL_PRAGMA) return;
+        if (LineageState::capture == false || plan->type == LogicalOperatorType::LOGICAL_PRAGMA
+            || plan->type == LogicalOperatorType::LOGICAL_SET) return;
         idx_t query_id = LineageState::query_id++; 
         LineageState::global_id = 0;
         if (LineageState::debug) {
@@ -376,9 +431,16 @@ void LineageExtension::Load(DuckDB &db) {
         }
         idx_t final_rowid = InjectLineageOperator(plan, input.context, query_id);
         // inject lineage op at the root of the plan to extract any annotation columns
+        // If root is create table, then add lineage operator below it
         auto root = make_uniq<LogicalLineageOperator>(plan->estimated_cardinality, LineageState::global_id++, query_id, plan->children[0]->type, final_rowid, 0, true);
-        root->AddChild(std::move(plan));
-        plan = std::move(root);
+        if (plan->type == LogicalOperatorType::LOGICAL_CREATE_TABLE) {
+          auto child = std::move(plan->children[0]);
+          root->AddChild(std::move(child));
+          plan->children[0] = std::move(root);
+        } else {
+          root->AddChild(std::move(plan));
+          plan = std::move(root);
+        }
         if (LineageState::debug) {
           std::cout << "Plan after to modifications" << std::endl;
           std::cout << plan->ToString() << std::endl;
@@ -397,10 +459,25 @@ void LineageExtension::Load(DuckDB &db) {
   	ExtensionUtil::RegisterFunction(db_instance, LineageScanFunction::GetFunctionSet());
   	ExtensionUtil::RegisterFunction(db_instance, LineageMetaFunction::GetFunctionSet());
 
+    auto clear_lineage_fun = PragmaFunction::PragmaStatement("clear_lineage", PragmaClearLineage);
+    auto enable_persist_fun = PragmaFunction::PragmaStatement("enable_persist_lineage", PragmaEnablePersistLineage);
+    auto disable_persist_fun = PragmaFunction::PragmaStatement("disable_persist_lineage", PragmaDisablePersistLineage);
     auto enable_lineage_fun = PragmaFunction::PragmaStatement("enable_lineage", PragmaEnableLineage);
     auto disable_lineage_fun = PragmaFunction::PragmaStatement("disable_lineage", PragmaDisableLineage);
+    auto enable_filter_scan = PragmaFunction::PragmaStatement("enable_filter_pushdown", PragmaEnableFilterPushDown);
+    auto disable_filter_scan = PragmaFunction::PragmaStatement("disable_filter_pushdown", PragmaDisableFilterPushDown);
+	  auto set_join_fun = PragmaFunction::PragmaCall("set_join", PragmaSetJoin, {LogicalType::VARCHAR});
+	  auto set_agg_fun = PragmaFunction::PragmaCall("set_agg", PragmaSetAgg, {LogicalType::VARCHAR});
+
+    ExtensionUtil::RegisterFunction(db_instance, clear_lineage_fun);
+    ExtensionUtil::RegisterFunction(db_instance, enable_persist_fun);
+    ExtensionUtil::RegisterFunction(db_instance, disable_persist_fun);
     ExtensionUtil::RegisterFunction(db_instance, enable_lineage_fun);
     ExtensionUtil::RegisterFunction(db_instance, disable_lineage_fun);
+    ExtensionUtil::RegisterFunction(db_instance, enable_filter_scan);
+    ExtensionUtil::RegisterFunction(db_instance, disable_filter_scan);
+    ExtensionUtil::RegisterFunction(db_instance, set_join_fun);
+    ExtensionUtil::RegisterFunction(db_instance, set_agg_fun);
     // JSON replacement scan
     auto &config = DBConfig::GetConfig(*db.instance);
     config.replacement_scans.emplace_back(LineageScanFunction::ReadLineageReplacement);

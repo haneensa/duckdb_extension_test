@@ -24,7 +24,7 @@ public:
 
 public:
   void Finalize(const PhysicalOperator &op, ExecutionContext &context) override {
-    if (LineageState::capture == false) return;
+    if (LineageState::capture == false || LineageState::persist == false) return;
     if (LineageState::lineage_store[table_name].size()) return;
 
     if (LineageState::debug) {
@@ -60,7 +60,7 @@ OperatorResultType PhysicalLineageOperator::Execute(ExecutionContext &context,
                          GlobalOperatorState &gstate,
                          OperatorState &state_p) const {
     auto &state = state_p.Cast<PhysicalLineageState>();
-   /*std::cout << "PhysicalLineageOperator: " <<  mark_join << " " << left_rid << " " << right_rid << " " << 
+  /* std::cout << "PhysicalLineageOperator: " <<  mark_join << " " << left_rid << " " << right_rid << " " << 
      EnumUtil::ToChars<LogicalOperatorType>(this->dependent_type) << std::endl;
     std::cout << input.ColumnCount() << std::endl;
     for (auto &type : input.GetTypes()) { std::cout << type.ToString() << " "; }
@@ -86,11 +86,9 @@ OperatorResultType PhysicalLineageOperator::Execute(ExecutionContext &context,
     if (this->dependent_type == LogicalOperatorType::LOGICAL_DELIM_GET) {
       chunk.SetCapacity(input);
       chunk.SetCardinality(input);
-   //   std::cout << "here 1" << std::endl;
       for (idx_t i = 0; i < left_rid; i++) {
         chunk.data[i].Reference(input.data[i]);
       }
-     // std::cout << "here 2" << std::endl;
       //chunk.data.back().Sequence(state.offset, 1, input.size());
      // std::cout << "pass through" << std::endl;
       // std::cout << chunk.ToString() << std::endl;
@@ -108,29 +106,26 @@ OperatorResultType PhysicalLineageOperator::Execute(ExecutionContext &context,
     }
     
     if (this->mark_join) {
-      //std::cout << "1" << std::endl;
       chunk.data.back().Reference(input.data[left_rid]);
-      //std::cout << "2" << std::endl;
       chunk.data[left_rid].Reference(input.data.back());
-//      std::cout << "3" << std::endl;
       //std::cout << chunk.ToString() << std::endl;
       return OperatorResultType::NEED_MORE_INPUT;
     }
 
-    //std::cout << "here 1" << std::endl;
     for (idx_t i = left_rid+1; i < left_rid+right_rid+1; i++) {
       chunk.data[i-1].Reference(input.data[i]);
     }
 
     // Extract annotations payload from left input
-    if (left_rid > 0) {
+    if (left_rid > 0 && LineageState::persist) {
       idx_t annotation_col = left_rid;
       Vector annotations(input.data[annotation_col].GetType());
       VectorOperations::Copy(input.data[annotation_col], annotations, input.size(), 0, 0);
       state.lineage.push_back({annotations, input.size()});
     }
 
-    if (this->dependent_type == LogicalOperatorType::LOGICAL_COMPARISON_JOIN) {
+    if (this->dependent_type == LogicalOperatorType::LOGICAL_COMPARISON_JOIN &&
+        LineageState::persist) {
       // Extract annotations payload from the right input
       idx_t annotation_col = input.ColumnCount() - 1;
       Vector annotations(input.data[annotation_col].GetType());
