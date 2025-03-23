@@ -8,6 +8,7 @@ import duckdb
 from duckdb.typing import *
 from utils import legend_bottom, legend_side, relative_overhead, overhead, getAllExec, getMat
 
+"""
 type1 = [1, 3, 5, 6, 7, 8, 9, 10, 12, 13, 14, 19]
 type2 = [11, 15, 16, 18]
 type3 = [2, 4, 17, 20, 21, 22]
@@ -19,7 +20,16 @@ def cat(qid):
         return "2. Uncorrelated subQs"
     else:
         return "3. Correlated subQs"
+"""
+type1 = [1, 3, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 19]
+type2 = [2,4,16,17,18,20,21,22]
+type3= []
 
+def cat(qid):
+    if int(qid) in type1:
+        return "Full Lineage"
+    else:
+        return "Short-Circuit"
 
 parser = argparse.ArgumentParser(description='TPCH benchmarking script')
 parser.add_argument('--db', type=str, help='queries folder', default='tpch_benchmark_capture_may27_e.csv')
@@ -85,7 +95,9 @@ tpch_withbaseline = con.execute(f"""select
                   """).fetchdf()
 
 #tpch_withbaseline.to_csv('tpch_smokedduck.csv', index=False)
-sd_tpch_withbaseline = pd.read_csv('tpch_smokedduck.csv')
+#sd_tpch_withbaseline = pd.read_csv('tpch_smokedduck.csv')
+#tpch_withbaseline.to_csv('tpch_smokedduck_v6.csv', index=False)
+sd_tpch_withbaseline = pd.read_csv('tpch_smokedduck_v6.csv')
 print(sd_tpch_withbaseline)
 
 tpch_withbaseline = con.execute("select * from tpch_withbaseline UNION ALL select * from sd_tpch_withbaseline").df()
@@ -100,11 +112,18 @@ lineage_size, lineage_count, postprocess_time,
 ((plan_no_create-base_plan_no_create)/base_plan_no_create)*100 as exec_roverhead,
 (mat_time - base_mat_time)*1000 as mat_overhead,
 ((mat_time - base_mat_time) / base_plan_no_create) *100 as mat_roverhead,
-(plan_runtime-base_plan_runtime)*1000 as overhead,
-((plan_runtime-base_plan_runtime)/base_plan_no_create)*100 as roverhead,
+((plan_no_create+mat_time)-base_plan_runtime)*1000 as overhead,
+(((plan_no_create+mat_time)-base_plan_runtime)/base_plan_no_create)*100 as roverhead,
 from tpch_withbaseline order by qtype, query, n_threads, lineage_type
                   """.format(g, g, g)).fetchdf()
 print(tpch_metrics)
+
+# TODO: find the best overhead for logical and use its value?
+# TODO: rename Logical to Q-Leveleve
+
+system_d = {"SD_Capture": "F-Level", "Logical-OPT": "Q-Level-OPT", "Logical-RID": "Q-Level", "Logical-window": "Q-Level-W", 
+        "Operator-Level": "Op-Level", "Operator-Level-Test": "Op-Level-Test"}
+tpch_metrics['lineage_type'] = tpch_metrics['lineage_type'].apply(system_d.get)
 
 class_list = type1
 class_list.extend(type2)
@@ -186,20 +205,19 @@ print(out)
 # TODO summary per system per query per sf per thread
 sf_list = [1, 10, 20]
 for sf in sf_list:
-    for sys in ["SD_Capture", "Logical-RID", "Logical-OPT", "Logical-window", "Operator-Level", "Operator-Level-Pass", "Operator-Level-Test"]:
+    for sys in ["F-Level", "Q-Level", "Q-Level-OPT", "Q-Level-W", "Op-Level", "Op-Level-Pass", "Op-Level-Test"]:
         print(f"=========== {sys} {sf} ===============")
         q = f"""
-    select lineage_type, sf, query,
-    avg(exec_roverhead) avg_eroverhead, max(exec_roverhead) max_eroverhead,
-    min(exec_roverhead) min_eroverhead,
-    avg(exec_overhead) avg_eoverhead, max(exec_overhead) max_eoverhead, 
-    avg(mat_roverhead) avg_mroverhead, max(mat_roverhead) max_mroverhead, 
-    avg(mat_overhead) avg_moverhead, max(mat_overhead) max_moverhead, 
-    avg(roverhead) avg_roverhead, max(roverhead) max_roverhead, 
+    select lineage_type, sf, query, qtype,
+    avg(exec_roverhead) avg_eroverhead, 
+    avg(exec_overhead) avg_eoverhead, 
+    avg(mat_roverhead) avg_mroverhead,
+    avg(mat_overhead) avg_moverhead,
+    avg(roverhead) avg_roverhead, avg(overhead) avg_overhead, 
     from tpch_metrics
     where  sf={sf} and lineage_type='{sys}' and n_threads=1
-    group by sf, lineage_type, query
-    order by sf, lineage_type, query
+    group by sf, qtype, lineage_type, query
+    order by sf, qtype, lineage_type, query
         """
         out = con.execute(q).df()
         print(out)
@@ -211,7 +229,7 @@ select lineage_type, sf, n_threads, qtype,
 avg(exec_roverhead) avg_eroverhead, max(exec_roverhead) max_eroverhead,
 min(exec_roverhead) min_eroverhead,
 avg(mat_roverhead) avg_mroverhead, max(mat_roverhead) max_mroverhead, 
-avg(roverhead) avg_roverhead, max(roverhead) max_roverhead, 
+avg(roverhead) avg_roverhead, max(roverhead) max_roverhead, min(roverhead) as min_r
 from tpch_metrics where lineage_type<>'Baseline' and n_threads=1
 group by sf, qtype, lineage_type, n_threads
 order by sf, qtype, lineage_type, n_threads
@@ -222,9 +240,9 @@ print(out)
 for sf in sf_list:
     print(f"======== {sf} ==========")
     # TODO: measure the wins of applying optimizations on logical
-    q = f"""select sf, query, n_threads, sys.lineage_type, logical.roverhead/sys.roverhead, sys.lineage_size, sys.lineage_count
-    from (select * from tpch_metrics where lineage_type='Logical-OPT') as logical JOIN
-         (select * from tpch_metrics where lineage_type IN ('Logical-window', 'SD_Capture')) as sys
+    q = f"""select sf, query, n_threads, sys.lineage_type, logical.roverhead, sys.roverhead, logical.roverhead/sys.roverhead, sys.lineage_size, sys.lineage_count
+    from (select * from tpch_metrics where lineage_type='Q-Level-OPT') as logical JOIN
+         (select * from tpch_metrics where lineage_type IN ('Q-Level-W', 'F-Level')) as sys
          USING (query, sf, n_threads)
          where sf={sf} and n_threads=1
          order by sys.lineage_type, sf, query, n_threads

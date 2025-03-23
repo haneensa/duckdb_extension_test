@@ -111,7 +111,10 @@ template = f"""
 
 cond = " and system<>'Baseline'"
 
-def PlotLines(pdata, x_axis, y_axis, x_label, y_label, x_type, y_type, color, linetype, facet, fname, w, h, wrap=None, xkwargs=None, labeller=None):
+def PlotLines(pdata, x_axis, y_axis, x_label, y_label, x_type, y_type, color, linetype, facet, fname, w, h, wrap=None, xkwargs=None, labeller=None, freex=False):
+    free_var = "free_y"
+    if freex:
+        free_var = "free_x"
     print("Plot:")
     print(pdata)
     if linetype:
@@ -128,9 +131,9 @@ def PlotLines(pdata, x_axis, y_axis, x_label, y_label, x_type, y_type, color, li
 
     if facet:
         if labeller:
-            p += facet_grid(facet, scales=esc("free_y"), labeller=labeller)
+            p += facet_grid(facet, scales=esc(free_var), labeller=labeller)
         else:
-            p += facet_grid(facet, scales=esc("free_y"))
+            p += facet_grid(facet, scales=esc(free_var))
 
     if wrap:
         p += facet_wrap(wrap)
@@ -142,6 +145,7 @@ y_axis_list = ["roverhead", "overhead"]
 y_header = ["Relative\nOverhead %", "Overhead (ms)"]
 linetype = "overheadtype"
 
+all_ops_sample = []
 ################### Filter ###############################
 # TODO: Operator-Level - Operator-Level Pass is the in-memory materialization overhead 
 if plot_filter:
@@ -165,10 +169,10 @@ if plot_filter:
     # Operator-Level exec - Operator-Level Pass exec is the materialization runtime
     op_level = con.execute(f"""select 'Operator-Level-Test' as lineage_type, t1.op_name, t1.card, t1.sel,
                         t1.runtime, t1.output_size, t1.lineage_size_mb, t1.lineage_count, t1.nchunks,
-                        t1.postprocess, t1.op_t, 
-                        t1.exec_t as all_t, 
+                        t1.postprocess,
+                        t1.all_t as all_t, 
                         t1.mat_t+(t1.exec_t-t2.exec_t) as mat_t, 
-                        t2.exec_t
+                        t2.exec_t, t1.op_t
                       from (select {g}, {m} from filter_data_avg where lineage_type='Operator-Level') as t1
                       join (select {g}, {m} from filter_data_avg where lineage_type='Operator-Level-Pass') as t2 using ({g})
                       """).df()
@@ -182,8 +186,8 @@ if plot_filter:
                       join filter_data_avg as t2 using ({g})
                       """).df()
     print(wbaseline)
-    #wbaseline.to_csv('micro_smokedduck.csv', index=False)
-    sd_wbaseline = pd.read_csv('micro_smokedduck.csv')
+    #wbaseline.to_csv('micro_smokedduck_v2.csv', index=False)
+    sd_wbaseline = pd.read_csv('micro_smokedduck_v2.csv')
     wbaseline = con.execute("select * from wbaseline UNION ALL select * from sd_wbaseline").df()
     print(sd_wbaseline)
     mdata = con.execute(f"""select {g}, lineage_type, {m}, {perm_overheads}
@@ -276,10 +280,10 @@ if plot_join or plot_ineq or plot_join_mtn:
     op_level = con.execute(f"""select 'Operator-Level' as lineage_type, t1.op_name, t1.n1, t1.n2, t1.sel,
                         t1.skew, t1.ncol, t1.groups,
                         t1.runtime, t1.output_size, t1.lineage_size_mb, t1.lineage_count, t1.nchunks,
-                        t1.postprocess, t1.op_t, 
-                        t1.exec_t as all_t, 
+                        t1.postprocess,
+                        t1.all_t as all_t, 
                         t1.mat_t+(t1.exec_t-t2.exec_t) as mat_t, 
-                        t2.exec_t
+                        t2.exec_t, t1.op_t
                       from (select {g}, {m} from join_data_avg where lineage_type='Operator-Level') as t1
                       join (select {g}, {m} from join_data_avg where lineage_type='Operator-Level-Pass') as t2 using ({g})
                       """).df()
@@ -292,8 +296,8 @@ if plot_join or plot_ineq or plot_join_mtn:
                       join join_data_avg as t2 using ({g})
                       """).df()
     print(wbaseline)
-    #wbaseline.to_csv('micro_smokedduck_join.csv', index=False)
-    sd_wbaseline = pd.read_csv('micro_smokedduck_join.csv')
+    #wbaseline.to_csv('micro_smokedduck_join_v2.csv', index=False)
+    sd_wbaseline = pd.read_csv('micro_smokedduck_join_v2.csv')
     wbaseline = con.execute("select * from wbaseline UNION ALL select * from sd_wbaseline").df()
     print(sd_wbaseline)
     mdata = con.execute(f"""select {g}, lineage_type, {m}, {perm_overheads}
@@ -312,6 +316,12 @@ if plot_join:
     for op_name in op_names:
         where = f"WHERE op_name IN ('{op_name}') {cond}"
         data  = con.execute(template.format(g, g, g, where)).fetchdf()
+        if (len(all_ops_sample) == 0):
+            all_ops_sample = con.execute("""
+                    select op_name, system, overhead, roverhead, overheadtype, groups, n1 as card from data where op_name='HASH_JOIN' and n1=5000000 and skew=1""").df()
+        else:
+            all_ops_sample = con.execute("""select * from all_ops_sample UNION ALL
+                    select op_name, system, overhead, roverhead, overheadtype, groups, n1 as card from data where op_name='HASH_JOIN' and n1=5000000 and skew=1""").df()
         sample_data = con.execute("select * from data where overheadType<>'Total'").df()
         print(sample_data)
         # 1. x-axis: selectivity, y-axis: runtime, facet: cardinality
@@ -459,24 +469,28 @@ if plot_agg:
     # Operator-Level Pass execute is the execute runttime. 
     # Operator-Level exec - Operator-Level Pass exec is the materialization runtime
     op_level = con.execute(f"""select 'Operator-Level' as lineage_type, t1.op_name, t1.card, t1.groups, t1.col,
-                        t1.runtime, t1.output_size, t1.lineage_size_mb, t1.lineage_count, t1.nchunks,
-                        t1.postprocess, t1.op_t, 
-                        t1.exec_t as all_t, 
+                        t1.output_size, t1.lineage_size_mb, t1.lineage_count, t1.nchunks,
+                        t1.postprocess, t1.runtime,
+                        t1.all_t as all_t, 
                         t1.mat_t+(t1.exec_t-t2.exec_t) as mat_t, 
-                        t2.exec_t
+                        t2.exec_t,
+                        t1.op_t, 
                       from (select {g}, {m} from agg_data_avg where lineage_type='Operator-Level') as t1
                       join (select {g}, {m} from agg_data_avg where lineage_type='Operator-Level-Pass') as t2 using ({g})
                       """).df()
+    print(con.execute("select * from op_level").df())
+    #print(op_level)
     agg_data_avg = con.execute("""select * from agg_data_avg where lineage_type<>'Operator-Level' and lineage_type<>'Operator-Level-Pass'
     UNION ALL select * from op_level
     """).df()
-    print(op_level)
+    print(con.execute("select * from op_level limit 10").df())
+    print(con.execute("select * from agg_data_avg where lineage_type='Operator-Level' limit 10").df())
     wbaseline = con.execute(f"""select {aug_baseline}
                       from (select {g}, {m} from agg_data_avg where lineage_type='Baseline') as t1
                       join agg_data_avg as t2 using ({g})
                       """).df()
     print(wbaseline)
-    #wbaseline.to_csv('micro_smokedduck_agg.csv', index=False)
+    #wbaseline.to_csv('micro_smokedduck_agg_v2.csv', index=False)
     sd_wbaseline = pd.read_csv('micro_smokedduck_agg.csv')
     wbaseline = con.execute("select * from wbaseline UNION ALL select * from sd_wbaseline").df()
     print(sd_wbaseline)
@@ -490,18 +504,26 @@ if plot_agg:
                       from wbaseline where lineage_type='SmokedDuck'
                       """).df()
     print(mdata)
-    where = f"where system IN ('Baseline', 'SmokedDuck', 'Perm', 'Perm_list', 'Smoke', 'Operator-Level')  {cond}"
+    where = f"where system IN ('Baseline', 'SmokedDuck', 'Perm', 'Smoke', 'Operator-Level')  {cond}"
+    #where = f"where system IN ('Baseline', 'SmokedDuck', 'Perm', 'Perm_list', 'Smoke', 'Operator-Level')  {cond}"
     data  = con.execute(template.format(g, g, g, where)).fetchdf()
-    sample_data = con.execute("select * from data where overheadType<>'Total'").df()
+    sample_data = con.execute("select * from data").df()
 
-    sample_data_10m = con.execute("select * from sample_data where card=10000000 and op_name<>'HASH_GROUP_BY'").df()
-    d = { "PERFECT_HASH_GROUP_BY": "PERFECT HASH GROUP BY", "HASH_GROUP_BY_var": "HASH GROUP BY", "HASH_GROUP_BY": "HASH GROUP BY"}
+    sample_data_10m = con.execute("select * from sample_data where card=10000000").df()
+    sample_data_10m = con.execute("select * from sample_data_10m where op_name='HASH_GROUP_BY'").df()
+    d = { "PERFECT_HASH_GROUP_BY": "PERFECT HASH GROUP BY", "HASH_GROUP_BY_var": "HASH GROUP B Var", "HASH_GROUP_BY": "HASH GROUP BY"}
     sample_data_10m['op_label'] = sample_data_10m['op_name'].apply(d.get)
-    sample_data_10m['card'] = sample_data_10m['card'].apply(lambda v: v / 1000000)
     # 1. x-axis: selectivity, y-axis: runtime, facet: cardinality
-    system_d = { "SmokedDuck": "This work", "Perm": "Logical", "Smoke": "Smoke", 'Operator-Level': 'Op-L', 'Perm_list': 'Perm-List'}
+    system_d = { "SmokedDuck": "F-Level", "Perm": "Q-Level", "Smoke": "Smoke", 'Operator-Level': 'Op-Level', 'Perm_list': 'Perm-List'}
     sample_data_10m['sys_label'] = sample_data_10m['system'].apply(system_d.get)
-    sample_data_10m_10 = con.execute("select * from sample_data_10m where groups=10 and op_name='PERFECT_HASH_GROUP_BY' and overheadtype<>'Total'").df()
+    if (len(all_ops_sample) == 0):
+        all_ops_sample = con.execute("""
+                select op_name, system, overhead, roverhead, overheadtype, groups, card from sample_data_10m where op_name='HASH_GROUP_BY' and card=10000000""").df()
+    else:
+        all_ops_sample = con.execute("""select * from all_ops_sample UNION ALL
+                select op_name, system, overhead, roverhead, overheadtype, groups, card from sample_data_10m where op_name='HASH_GROUP_BY' and card=10000000""").df()
+    sample_data_10m['card'] = sample_data_10m['card'].apply(lambda v: v / 1000000)
+    sample_data_10m_10 = con.execute("select * from sample_data_10m where groups=10  and overheadtype<>'Materialize'").df()
     print(sample_data_10m_10)
     for idx, y_axis in enumerate(y_axis_list):
         x_axis, x_label, color, facet = "groups", "Groups (g)", "system", "~op_name~card"
@@ -514,7 +536,7 @@ if plot_agg:
         labeller="labeller(card=function(x)paste('# Tuples:',x,'M',sep=''))"
         x_type, y_type, y_label = "log10", "log10", "{} [log]".format(y_header[idx])
         xkwargs=None # dict(breaks=[10,100,1000], labels=list(map(esc,['10','100','1000'])))
-        fname, w, h = "micro_{}_10M_line_reg_agg.png".format(y_axis), 8, 2.5
+        fname, w, h = "micro_{}_10M_line_reg_agg.png".format(y_axis), 5, 2.5
         PlotLines(sample_data_10m, x_axis, y_axis, x_label, y_label, x_type, y_type, color, linetype, facet, fname, w, h, None, xkwargs, labeller)
 
         # plot 10M, 10 groups, Smoke, SD, Logical
@@ -522,8 +544,8 @@ if plot_agg:
         labeller="labeller(card=function(x)paste('# Tuples:',x,'M',sep=''))"
         x_type, y_type, y_label = "discrete", "continuous", "{}".format(y_header[idx])
         xkwargs=None # dict(breaks=[10,100,1000], labels=list(map(esc,['10','100','1000'])))
-        fname, w, h = "micro_baselines_{}_10M_10_line_reg_agg.png".format(y_axis), 4, 2.5
         
+        fname, w, h = "micro_baselines_{}_10M_10_line_reg_agg.png".format(y_axis), 4, 2.5
         p = ggplot(sample_data_10m_10, aes(x=x_axis, y=y_axis, fill=color, group=color))
         p += axis_labels(x_label, y_label, x_type, y_type)
         p += geom_bar(stat=esc('identity'), alpha=0.8, posiion=position_dodge(width=0.1), width=0.8)
@@ -543,3 +565,14 @@ if plot_agg:
                 order by overheadtype, system, op_name, card, groups
                 """).df()
         print(summary)
+
+print(con.execute("select * from all_ops_sample order by system, overheadtype").df())
+system_d = { "SmokedDuck": "F-Level", "Perm": "Q-Level", "Smoke": "Smoke", 'Operator-Level': 'Op-Level', 'Perm_list': 'Perm-List'}
+all_ops_sample['sys_label'] = all_ops_sample['system'].apply(system_d.get)
+data = con.execute("select * from all_ops_sample where overheadtype<>'Materialize'").df()
+for idx, y_axis in enumerate(y_axis_list):
+    x_axis, x_label, color, facet = "groups", "Groups (g)", "sys_label", "~op_name"
+    x_type, y_type, y_label = "log10", "log10", "{} [log]".format(y_header[idx])
+    xkwargs=dict(breaks=[10,100,1000,10000,100000], labels=list(map(esc,['10','100','1K','10K','100K'])))
+    fname, w, h = "micro_{}_line_reg_agg_join.png".format(y_axis), 8, 2.5
+    PlotLines(data, x_axis, y_axis, x_label, y_label, x_type, y_type, color, linetype, facet, fname, w, h, None, xkwargs, None, True)

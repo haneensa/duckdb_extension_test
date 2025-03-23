@@ -145,7 +145,9 @@ idx_t ProcessJoin(unique_ptr<LogicalOperator> &op, vector<idx_t>& rowids, idx_t 
     if (LineageState::debug)
     std::cout << "-> " << left_col_id + right_col_id << " " << left_col_id << " " << right_col_id << " " << rowids[0] << " " << rowids[1] << " "
       << join.left_projection_map.size() << " " << join.right_projection_map.size() << std::endl;
-    auto lop = make_uniq<LogicalLineageOperator>(op->estimated_cardinality, LineageState::global_id++, query_id, op->type, 0, right_col_id);
+    int source_count = 1;
+    auto lop = make_uniq<LogicalLineageOperator>(op->estimated_cardinality, LineageState::global_id++,
+        query_id, op->type, source_count,  0, right_col_id);
     lop->AddChild(std::move(op));
     op = std::move(lop);
     return right_col_id;
@@ -161,7 +163,9 @@ idx_t ProcessJoin(unique_ptr<LogicalOperator> &op, vector<idx_t>& rowids, idx_t 
   if (join.join_type == JoinType::MARK) {
       if (LineageState::debug)
     std::cout << "inject mark join: " << left_col_id << " " << join.left_projection_map.size() << std::endl;
-    auto lop = make_uniq<LogicalLineageOperator>(op->estimated_cardinality, LineageState::global_id++, query_id, op->type, left_col_id, 0);
+    int source_count = 1;
+    auto lop = make_uniq<LogicalLineageOperator>(op->estimated_cardinality, LineageState::global_id++, query_id,
+        op->type, source_count, left_col_id, 0);
     lop->AddChild(std::move(op));
     lop->mark_join = true;
     op = std::move(lop);
@@ -170,7 +174,9 @@ idx_t ProcessJoin(unique_ptr<LogicalOperator> &op, vector<idx_t>& rowids, idx_t 
   } else if (join.join_type == JoinType::SEMI || join.join_type == JoinType::ANTI) {
       if (LineageState::debug)
     std::cout << "inject semi join: " << left_col_id << " " << join.left_projection_map.size() << std::endl;
-    auto lop = make_uniq<LogicalLineageOperator>(op->estimated_cardinality, LineageState::global_id++, query_id, op->type, left_col_id, 0);
+    int source_count = 1;
+    auto lop = make_uniq<LogicalLineageOperator>(op->estimated_cardinality, LineageState::global_id++, query_id,
+        op->type, source_count, left_col_id, 0);
     lop->AddChild(std::move(op));
     op = std::move(lop);
     return left_col_id;
@@ -183,9 +189,11 @@ idx_t ProcessJoin(unique_ptr<LogicalOperator> &op, vector<idx_t>& rowids, idx_t 
     right_col_id = rowids[1];
   }
 
-      if (LineageState::debug)
+  if (LineageState::debug)
   std::cout << "-> " << left_col_id + right_col_id << " " << left_col_id << " " << right_col_id << " " << rowids[0] << " " << rowids[1] << " " << join.left_projection_map.size() << " " << join.right_projection_map.size() << std::endl;
-  auto lop = make_uniq<LogicalLineageOperator>(op->estimated_cardinality, LineageState::global_id++, query_id, op->type, left_col_id, right_col_id);
+  int source_count = 2;
+  auto lop = make_uniq<LogicalLineageOperator>(op->estimated_cardinality, LineageState::global_id++, query_id,
+      op->type, source_count, left_col_id, right_col_id);
   lop->AddChild(std::move(op));
   op = std::move(lop);
   return left_col_id + right_col_id;
@@ -226,7 +234,8 @@ idx_t InjectLineageOperator(unique_ptr<LogicalOperator> &op,ClientContext &conte
       auto& col = op->Cast<LogicalColumnDataGet>();
       idx_t col_id = col.chunk_types.size();
       if (LineageState::debug) std::cout << "chunk get " << col_id << std::endl;
-      auto lop = make_uniq<LogicalLineageOperator>(op->estimated_cardinality, LineageState::global_id++, query_id, op->type, col_id, 0);
+      auto lop = make_uniq<LogicalLineageOperator>(op->estimated_cardinality, LineageState::global_id++, query_id,
+          op->type, 1, col_id, 0);
       lop->AddChild(std::move(op));
       op = std::move(lop);
       return col_id;
@@ -308,10 +317,11 @@ idx_t InjectLineageOperator(unique_ptr<LogicalOperator> &op,ClientContext &conte
         std::cout << "LogicalDelimGet types after injection: " << get.table_index << " " << get.chunk_types.size() << std::endl;
       int col_id = get.chunk_types.size();
       get.chunk_types.push_back(LogicalType::LIST(LogicalType::ROW_TYPE));
-      auto lop = make_uniq<LogicalLineageOperator>(op->estimated_cardinality, LineageState::global_id++, query_id, op->type, col_id, 0);
+      auto lop = make_uniq<LogicalLineageOperator>(op->estimated_cardinality, LineageState::global_id++, query_id,
+          op->type, 1, col_id, 0);
       lop->AddChild(std::move(op));
       op = std::move(lop);
-      return get.chunk_types.size()-1; // TODO: adjust once I adjust distinct types
+      return col_id; // TODO: adjust once I adjust distinct types
     } else if (op->type == LogicalOperatorType::LOGICAL_DELIM_JOIN) {
       // the JOIN right child, becomes right_delim_join child that is used as input to
       // JOIN and DISTINCT
@@ -344,7 +354,8 @@ idx_t InjectLineageOperator(unique_ptr<LogicalOperator> &op,ClientContext &conte
             aggr.expressions.push_back(std::move(list_aggregate));
             idx_t new_col_id = aggr.groups.size() + aggr.expressions.size() + aggr.grouping_functions.size() - 1;
             
-            auto dummy = make_uniq<LogicalLineageOperator>(aggr.estimated_cardinality, LineageState::global_id++, query_id, op->type, new_col_id, 0);
+            auto dummy = make_uniq<LogicalLineageOperator>(aggr.estimated_cardinality, LineageState::global_id++, query_id,
+                op->type, 1, new_col_id, 0);
             dummy->AddChild(std::move(op));
 
             op = std::move(dummy);
