@@ -36,7 +36,7 @@ parser.add_argument('--db', type=str, help='queries folder', default='tpch_bench
 args = parser.parse_args()
 
 
-con = duckdb.connect("tpch_benchmark_capture_exp_20250519_1959.db")
+con = duckdb.connect("data/tpch_benchmark_capture_exp_20250519_1959.db")
 tpch_df_sf10_gprom = con.execute("select * from tpch_capture").df()
 print(tpch_df_sf10_gprom)
 con = duckdb.connect(args.db)
@@ -44,6 +44,7 @@ con.create_function("getMat", getMat, [VARCHAR], FLOAT)
 con.create_function("getAllExec", getAllExec, [VARCHAR], FLOAT)
 con.create_function("cat", cat, [BIGINT], VARCHAR)
 tpch_all = con.execute("select * from tpch_capture UNION ALL select * from tpch_df_sf10_gprom").df()
+#tpch_all = con.execute("select * from tpch_capture").df()
 print(con.execute("select * from tpch_all").df())
 tpch_df = con.execute("""select *, cat(query) as qtype,
     getMat(plan_timings) as mat_time,
@@ -97,11 +98,12 @@ tpch_withbaseline = con.execute(f"""select
                   t2.* from (select {g}, {m} from avg_tpch where lineage_type='Baseline') as t1
                   join avg_tpch  as t2 using ({g})
                   """).fetchdf()
+print(con.execute("select distinct lineage_type from tpch_withbaseline").df())
 
 #tpch_withbaseline.to_csv('tpch_smokedduck.csv', index=False)
 #sd_tpch_withbaseline = pd.read_csv('tpch_smokedduck.csv')
 #tpch_withbaseline.to_csv('tpch_smokedduck_v6.csv', index=False)
-sd_tpch_withbaseline = pd.read_csv('tpch_smokedduck_v6.csv')
+sd_tpch_withbaseline = pd.read_csv('data/tpch_smokedduck_v6.csv')
 print(sd_tpch_withbaseline)
 
 tpch_withbaseline = con.execute("select * from tpch_withbaseline UNION ALL select * from sd_tpch_withbaseline").df()
@@ -125,8 +127,12 @@ print(tpch_metrics)
 # TODO: find the best overhead for logical and use its value?
 # TODO: rename Logical to Q-Leveleve
 
-system_d = {"SD_Capture": "F-Level", "Logical-OPT": "Q-Level-OPT", "Logical-RID": "Q-Level", "Logical-window": "Q-Level-W", 
-        "Operator-Level": "Op-Level", "Operator-Level-Test": "Op-Level-Test"}
+system_d = {"SD_Capture": "F-Level", "Logical-OPT": "Q-Level-OPT", "Logical-RID": "Q-Level",
+        "Logical-window": "Q-Level-W", 
+        "Operator-Level": "Op-Level", "Operator-Level-Test": "Op-Level-Test",
+        "Operator-Level-Hybrid": "F+Op-Level",
+        "Operator-Level-Pass-Hybrid": "F+Op+Pass-Level",
+        }
 tpch_metrics['lineage_type'] = tpch_metrics['lineage_type'].apply(system_d.get)
 
 class_list = type1
@@ -176,7 +182,7 @@ if 1:
         p += facet_grid(".~sf~qtype", scales=esc("free_x"), space=esc("free_x"))
         postfix = """data$qid= factor(data$qid, levels=c({}))""".format(queries_order)
         ggsave("figures/tpch_{}.png".format(y_axis), p, postfix=postfix,  width=14, height=6, scale=0.8)
-
+        ##################
         # TODO: plot sf=20
         p = ggplot(data_sf, aes(x='qid', ymin=0, ymax=y_axis,  y=y_axis, color='system', fill='system', group='system', shape='overheadType'))
         p += geom_point(stat=esc('identity'), alpha=0.8, position=position_dodge(width=0.8), width=0.5, size=2)
@@ -190,6 +196,26 @@ if 1:
         p += facet_grid(".~qtype", scales=esc("free_x"), space=esc("free_x"))
         postfix = """data$qid= factor(data$qid, levels=c({}))""".format(queries_order)
         ggsave("figures/tpch_sample_{}.png".format(y_axis), p, postfix=postfix,  width=14, height=3, scale=0.8)
+        ##################
+        data_total = con.execute("select * from data_sf where overheadType='Total'").df()
+        p = ggplot(data_total, aes(x='qid', ymin=0, ymax=y_axis,  y=y_axis, color='system', fill='system', group='system', shape='system'))
+        p += geom_point(stat=esc('identity'), alpha=0.8, position=position_dodge(width=0.8), width=0.5, size=2)
+        if y_axis == 'overhead':
+            p += axis_labels('Query', "{} (log)".format(header[idx]), "discrete", "log10", ykwargs=dict(breaks=[10, 100, 1000], labels=list(map(esc, ['10', '100', '1000']))))
+        else:
+            p += axis_labels('Query', "{} (log)".format(header[idx]), "discrete", "log10", ykwargs=dict(breaks=[20, 100, 1000], labels=list(map(esc, ['20', '100', '1000']))))
+            p += geom_hline(aes(yintercept=20, linetype=esc("dotted")))
+        p += legend_side
+        #p += facet_grid(".~sf", scales=esc("free_x"), space=esc("free_x"))
+        ggsave("figures/tpch_scatter_{}.png".format(y_axis), p, width=6, height=2.5, scale=0.8)
+        ##################
+        data_avg = con.execute(f"select system, avg({y_axis}) as {y_axis} from data_sf where overheadType='Total' group by system").df()
+        p = ggplot(data_avg, aes(x='system', ymin=0, ymax=y_axis,  y=y_axis, color='system', fill='system', group='system', shape='system'))
+        p += geom_point(stat=esc('identity'), alpha=0.8, position=position_dodge(width=0.8), width=0.5, size=2)
+        p += axis_labels('System', "{} (log)".format(header[idx]), "discrete", "log10")
+        p += legend_side
+        #p += facet_grid(".~sf", scales=esc("free_x"), space=esc("free_x"))
+        ggsave("figures/tpch_avg_{}.png".format(y_axis), p, width=5, height=2.5, scale=0.8)
     
 q = f"""
 select lineage_type, sf, query,
@@ -209,7 +235,8 @@ print(out)
 # TODO summary per system per query per sf per thread
 sf_list = [1, 10, 20]
 for sf in sf_list:
-    for sys in ["F-Level", "Q-Level", "Q-Level-OPT", "Q-Level-W", "Op-Level", "Op-Level-Pass", "Op-Level-Test"]:
+    for sys in ["F-Level", "Q-Level", "Q-Level-OPT", "Q-Level-W",
+            "Op-Level", "Op-Level-Pass", "Op-Level-Test", "F+Op-Level", "F+Op+Pass-Level"]:
         print(f"=========== {sys} {sf} ===============")
         q = f"""
     select lineage_type, sf, query, qtype,
@@ -261,3 +288,24 @@ from (select * from tpch_metrics where lineage_type='Q-Level-OPT') as logical JO
      group by sf, sys.lineage_type, sys.qtype
      """
 print(con.execute(q).df())
+# TODO: plot average, max, min per system
+# TODO: plot y-axis, system latency, x-axis query
+
+
+import seaborn as sns
+import matplotlib.pyplot as plt
+# Create boxplot
+plt.figure(figsize=(8, 5))
+sns.boxplot(y="system", x="roverhead", data=data_sf)
+plt.xscale("log")  # Set log scale on latency axis
+
+plt.title("Latency Distribution per Query")
+plt.xlabel("Query")
+plt.ylabel("Latency (ms)")
+plt.grid(True)
+plt.tight_layout()
+
+# Save plot to file
+plt.savefig("figures/latency_boxplot.png")
+# Do not show plot
+plt.close()

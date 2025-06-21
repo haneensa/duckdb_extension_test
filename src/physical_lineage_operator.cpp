@@ -10,11 +10,11 @@
 namespace duckdb {
 PhysicalLineageOperator::PhysicalLineageOperator(vector<LogicalType> types, unique_ptr<PhysicalOperator> child,
         idx_t operator_id, idx_t query_id, LogicalOperatorType dependent_type, int source_count,
-        idx_t left_rid, idx_t right_rid, bool is_root, string join_type)
+        idx_t left_rid, idx_t right_rid, bool is_root, string join_type, bool pre, bool post)
       : PhysicalOperator(PhysicalOperatorType::EXTENSION, std::move(types), child->estimated_cardinality),
       is_root(is_root), dependent_type(dependent_type), source_count(source_count),
       operator_id(operator_id), query_id(query_id),
-      left_rid(left_rid), right_rid(right_rid), join_type(join_type) {
+      left_rid(left_rid), right_rid(right_rid), join_type(join_type), pre(pre), post(post) {
       children.push_back(std::move(child));
 }
 
@@ -23,19 +23,21 @@ public:
   explicit PhysicalLineageState(ExecutionContext &context, string table_name,
       LogicalOperatorType dependent_type, int source_count, string join_type) 
     : offset(0), source_count(source_count), table_name(table_name),
-      join_type(join_type), dependent_type(dependent_type) {
+      join_type(join_type), dependent_type(dependent_type), pre(false), post(false) {
   }
 
 public:
   void Finalize(const PhysicalOperator &op, ExecutionContext &context) override {
     if (LineageState::capture == false || LineageState::persist == false) return;
     if (LineageState::lineage_store[table_name].size()) return;
+    if (post) return;
 
     if (LineageState::debug) {
       std::cout << "[DEBUG] persist lineage " <<  table_name << " " << lineage.size()
         << " " << lineage_right.size() << " " << EnumUtil::ToChars<LogicalOperatorType>(this->dependent_type) << std::endl;
     }
 
+    // TODO: local per thread, need to track thread_id/partition_id too
     LineageState::lineage_types[table_name] = dependent_type;
     LineageState::lineage_store[table_name] = std::move(lineage);
     if (source_count == 2 || join_type=="RIGHT_SEMI" || join_type=="RIGHT") {
@@ -52,31 +54,37 @@ public:
   idx_t offset;
   int source_count;
   string join_type;
+  bool pre, post;
 };
 
 
 unique_ptr<OperatorState> PhysicalLineageOperator::GetOperatorState(ExecutionContext &context) const {
   string table_name = GetName() + "_" + to_string(query_id) + "_" + to_string(operator_id);
-  std::cout << "Lineage store address from LM: " << &LineageGlobal::LS << " thread: " << &context.thread << std::endl;
-  // if a flag is set, then LineageGlobal::LS.init(parent_ptr, context.thread)
-  // if a flag is set, then LineageGlobal::LS.Get(parent_ptr, context.thread)
+ // std::cout << pre << " " << post << " Lineage store address from LM: " << &LineageGlobal::LS << " thread: " << &context.thread << std::endl;
 	return make_uniq<PhysicalLineageState>(context, table_name, dependent_type, source_count, join_type);
 }
 
+// TODO: we need to also include thread_id/partition_id annotation and propagate it
 OperatorResultType PhysicalLineageOperator::Execute(ExecutionContext &context,
                          DataChunk &input, 
                          DataChunk &chunk,
                          GlobalOperatorState &gstate,
                          OperatorState &state_p) const {
+    // local per thread
     auto &state = state_p.Cast<PhysicalLineageState>();
     if (LineageState::debug) {
-      std::cout << "[PhysicalLineageOperator] join_type:" <<  join_type << ", source_count: " << source_count 
+      std::cout << pre << " " << post << " [PhysicalLineageOperator] join_type:" <<  join_type << ", source_count: " << source_count 
       << ", left_rid: " << left_rid << ", right_rid:" << right_rid << ", dependent_type: " << 
        EnumUtil::ToChars<LogicalOperatorType>(this->dependent_type) << std::endl;
       std::cout << input.ColumnCount() << std::endl;
       for (auto &type : input.GetTypes()) { std::cout << type.ToString() << " "; }
       std::cout << "\n -------" << std::endl;
+      
+      std::cout << chunk.ColumnCount() << std::endl;
+      for (auto &type : chunk.GetTypes()) { std::cout << type.ToString() << " "; }
+      std::cout << "\n -------" << std::endl;
     }
+
     if (left_rid == 0 && right_rid > 0) { // right semi join
       chunk.SetCardinality(input);
       chunk.Reference(input);
@@ -115,14 +123,14 @@ OperatorResultType PhysicalLineageOperator::Execute(ExecutionContext &context,
     }
 
     // Extract annotations payload from left input
-    if (left_rid > 0 && LineageState::persist) {
+    if (!post && left_rid > 0 && LineageState::persist) {
       idx_t annotation_col = left_rid;
       Vector annotations(input.data[annotation_col].GetType());
       VectorOperations::Copy(input.data[annotation_col], annotations, input.size(), 0, 0);
       state.lineage.push_back({annotations, input.size()});
     }
 
-    if ((this->source_count == 2 || join_type=="RIGHT_SEMI" || join_type=="RIGHT") && LineageState::persist) {
+    if (!post && (this->source_count == 2 || join_type=="RIGHT_SEMI" || join_type=="RIGHT") && LineageState::persist) {
       // Extract annotations payload from the right input
       idx_t annotation_col = input.ColumnCount() - 1;
       Vector annotations(input.data[annotation_col].GetType());
@@ -130,12 +138,15 @@ OperatorResultType PhysicalLineageOperator::Execute(ExecutionContext &context,
       state.lineage_right.push_back({annotations, input.size()});
     }
 
-    if (!is_root) {
+    if (pre) {
+      state.offset += input.size();
+    }
+
+    if (!is_root && !pre) {
       // This is not the root, reindex complex annotations
       chunk.data.back().Sequence(state.offset, 1, input.size());
       state.offset += input.size();
     }
-    
     
     return OperatorResultType::NEED_MORE_INPUT;
 }

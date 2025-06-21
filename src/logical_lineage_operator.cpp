@@ -15,7 +15,7 @@ LogicalLineageOperator::LogicalLineageOperator(idx_t estimated_cardinality,
     int source_count, idx_t left_rid, idx_t right_rid, bool is_root)  :
   operator_id(operator_id), query_id(query_id), 
   source_count(source_count), dependent_type(dependent_type), is_root(is_root),
-  left_rid(left_rid), right_rid(right_rid),  mark_join(false) {
+  left_rid(left_rid), right_rid(right_rid),  mark_join(false), pre(false), post(false) {
   this->estimated_cardinality = estimated_cardinality; 
   if (LineageState::debug)
     std::cout << "LogicalLineageOperator with child type:" << EnumUtil::ToChars<LogicalOperatorType>(dependent_type) << "\n";
@@ -24,6 +24,16 @@ LogicalLineageOperator::LogicalLineageOperator(idx_t estimated_cardinality,
 void LogicalLineageOperator::ResolveTypes()  {
   if (children.empty()) return;
   types = children[0]->types; // Copy types from child and log them
+  
+  if (pre) {
+    types.pop_back();
+    return;
+  } 
+  if (post) {
+    types.push_back(LogicalType::ROW_TYPE);
+    return;
+  }
+
   if (this->dependent_type == LogicalOperatorType::LOGICAL_DELIM_GET) { 
     types.pop_back();
     types.push_back(LogicalType::ROW_TYPE);
@@ -150,7 +160,6 @@ unique_ptr<PhysicalOperator> LogicalLineageOperator::CreatePlan(ClientContext &c
     // this has distinct and join we need to modify
     auto& delim = child->Cast<PhysicalDelimJoin>();
     auto last_col = delim.children.back()->types.size()-1;
-    std::cout << "Add LIST agg " << last_col << std::endl;
     auto &catalog = Catalog::GetSystemCatalog(context);
     auto &entry = catalog.GetEntry<AggregateFunctionCatalogEntry>(
         context, DEFAULT_SCHEMA, "list");
@@ -173,7 +182,8 @@ unique_ptr<PhysicalOperator> LogicalLineageOperator::CreatePlan(ClientContext &c
     std::cout << "[DEBUG] LogicalLineageOperator::CreatePlan. " << std::endl;
     std::cout << child->ToString() << std::endl;
   }
+  // pass pre,post?
   return make_uniq<PhysicalLineageOperator>(types, std::move(child), operator_id, query_id, dependent_type,
-      source_count, left_rid, right_rid, is_root, join_type);
+      source_count, left_rid, right_rid, is_root, join_type, pre, post);
 }
 }

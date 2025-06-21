@@ -28,6 +28,7 @@ public:
     LogicalOperatorType dependent_type;
     bool is_root;
     bool mark_join;
+    bool pre, post;
 };
 
 }

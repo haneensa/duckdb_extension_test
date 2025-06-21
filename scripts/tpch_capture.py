@@ -12,6 +12,7 @@ from utils import parse_plan_timings, Run, getStats
 parser = argparse.ArgumentParser(description='TPCH benchmarking script')
 parser.add_argument('notes', type=str,  help="run notes")
 parser.add_argument('--lineage', action='store_true',  help="Enable lineage")
+parser.add_argument('--hybrid', action='store_true',  help="Enable Hybrid")
 parser.add_argument('--show_output', action='store_true',  help="Print query output")
 parser.add_argument('--stats', action='store_true',  help="Get lineage size, nchunks and postprocess time")
 parser.add_argument('--query_lineage', action='store_true',  help="query lineage")
@@ -52,6 +53,8 @@ else:
     lineage_type = "Operator-Level"
     if args.no_persist:
         lineage_type += "-Pass"
+    if args.hybrid:
+        lineage_type += "-Hybrid"
 # sf: 1, 5, 10, 20
 # threads: 1, 4, 8, 12, 16
 threads_list = [1] #, 4, 8, 16]
@@ -64,7 +67,7 @@ gprom_list = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19,
 results = []
 sf = args.sf
 for th_id in threads_list:
-    for i in [11]: #range(1, 23):
+    for i in range(1, 23):
         dbname = f'tpch_{sf}.db'
         if not os.path.exists(dbname):
             #con = duckdb.connect(dbname)
@@ -111,6 +114,8 @@ for th_id in threads_list:
             print(plan)
             size_avg += lineage_size
             postprocess_time *= 1000
+        if args.lineage:
+            con.execute("PRAGMA clear_lineage")
         
         results.append({'query': i, 'runtime': avg, 'sf': sf, 'repeat': args.repeat,
             'lineage_type': lineage_type, 'n_threads': th_id, 'output': output_size,

@@ -29,6 +29,7 @@ namespace duckdb {
 idx_t LineageState::query_id = 0;
 idx_t LineageState::global_id = 0;
 bool LineageState::capture = false;
+bool LineageState::hybrid = false;
 bool LineageState::debug = false;
 bool LineageState::persist = true;
 idx_t LineageState::table_idx = 0;
@@ -336,6 +337,7 @@ idx_t InjectLineageOperator(unique_ptr<LogicalOperator> &op,ClientContext &conte
         auto &aggr = op->Cast<LogicalAggregate>();
        // if (!aggr.groups.empty()) {
        // TODO: inject one prior that is specialized to set active_log
+       if (LineageState::hybrid == false) {
             if (LineageState::debug) std::cout << "[DEBUG] Modifying Aggregate operator\n";
             auto list_function = GetListFunction(context);
             auto rowid_colref = make_uniq_base<Expression, BoundReferenceExpression>(LogicalType::ROW_TYPE, rowids[0]);
@@ -353,10 +355,27 @@ idx_t InjectLineageOperator(unique_ptr<LogicalOperator> &op,ClientContext &conte
             auto dummy = make_uniq<LogicalLineageOperator>(aggr.estimated_cardinality, LineageState::global_id++, query_id,
                 op->type, 1, new_col_id, 0);
             dummy->AddChild(std::move(op));
-
             op = std::move(dummy);
             
             return new_col_id;
+       } else {
+         // add LM to agg child to strip annotations
+          auto pre = make_uniq<LogicalLineageOperator>(aggr.estimated_cardinality, LineageState::global_id++, query_id,
+              op->type, 1, rowids[0], 0);
+          pre->pre = true;
+
+          auto child = std::move(op->children[0]);
+          pre->AddChild(std::move(child));
+          op->children[0] = std::move(pre);
+         // add LM after agg to inject annotations
+          idx_t new_col_id = aggr.groups.size() + aggr.expressions.size() + aggr.grouping_functions.size() ;
+          auto post = make_uniq<LogicalLineageOperator>(aggr.estimated_cardinality, LineageState::global_id++, query_id,
+              op->type, 1, new_col_id, 0);
+          post->post = true;
+          post->AddChild(std::move(op));
+          op = std::move(post);
+          return new_col_id;
+       }
       //  } // if simple agg, add operator below to remove annotations, and operator above to generate annotations
     }
     return 0;
@@ -371,6 +390,7 @@ static void PragmaClearLineage(ClientContext &context, const FunctionParameters 
   LineageState::lineage_store.clear();
   LineageState::lineage_types.clear();
   LineageState::pipelines.clear();
+  LineageGlobal::LS.clear();
 }
 
 static void PragmaEnablePersistLineage(ClientContext &context, const FunctionParameters &parameters) {
@@ -381,13 +401,23 @@ static void PragmaDisablePersistLineage(ClientContext &context, const FunctionPa
   LineageState::persist = false;
 }
 
+static void PragmaEnableHybrid(ClientContext &context, const FunctionParameters &parameters) {
+  LineageState::hybrid = true;
+}
+
+static void PragmaDisableHybrid(ClientContext &context, const FunctionParameters &parameters) {
+  LineageState::hybrid = false;
+}
 
 static void PragmaEnableLineage(ClientContext &context, const FunctionParameters &parameters) {
   LineageState::capture = true;
+  if (LineageState::hybrid)
+    LineageGlobal::LS.capture = true;
 }
 
 static void PragmaDisableLineage(ClientContext &context, const FunctionParameters &parameters) {
   LineageState::capture = false;
+  LineageGlobal::LS.capture = false;
 }
 
 static void PragmaDisableFilterPushDown(ClientContext &context, const FunctionParameters &parameters) {
@@ -471,6 +501,8 @@ void LineageExtension::Load(DuckDB &db) {
     auto disable_persist_fun = PragmaFunction::PragmaStatement("disable_persist_lineage", PragmaDisablePersistLineage);
     auto enable_lineage_fun = PragmaFunction::PragmaStatement("enable_lineage", PragmaEnableLineage);
     auto disable_lineage_fun = PragmaFunction::PragmaStatement("disable_lineage", PragmaDisableLineage);
+    auto enable_hybrid_fun = PragmaFunction::PragmaStatement("enable_hybrid", PragmaEnableHybrid);
+    auto disable_hybrid_fun = PragmaFunction::PragmaStatement("disable_hybrid", PragmaDisableHybrid);
     auto enable_filter_scan = PragmaFunction::PragmaStatement("enable_filter_pushdown", PragmaEnableFilterPushDown);
     auto disable_filter_scan = PragmaFunction::PragmaStatement("disable_filter_pushdown", PragmaDisableFilterPushDown);
 	  auto set_join_fun = PragmaFunction::PragmaCall("set_join", PragmaSetJoin, {LogicalType::VARCHAR});
@@ -481,6 +513,8 @@ void LineageExtension::Load(DuckDB &db) {
     ExtensionUtil::RegisterFunction(db_instance, disable_persist_fun);
     ExtensionUtil::RegisterFunction(db_instance, enable_lineage_fun);
     ExtensionUtil::RegisterFunction(db_instance, disable_lineage_fun);
+    ExtensionUtil::RegisterFunction(db_instance, enable_hybrid_fun);
+    ExtensionUtil::RegisterFunction(db_instance, disable_hybrid_fun);
     ExtensionUtil::RegisterFunction(db_instance, enable_filter_scan);
     ExtensionUtil::RegisterFunction(db_instance, disable_filter_scan);
     ExtensionUtil::RegisterFunction(db_instance, set_join_fun);

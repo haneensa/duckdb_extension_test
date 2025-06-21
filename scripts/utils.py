@@ -12,6 +12,8 @@ def get_lineage_type(args):
         lineage_type = "Operator-Level"
         if args.no_persist:
             lineage_type += "-Pass"
+        if args.hybrid:
+            lineage_type += "-Hybrid"
     elif args.perm:
         lineage_type = "Perm"
     else:
@@ -96,6 +98,8 @@ def getStats(con, q):
 def execute(Q, con, args):
     Q = " ".join(Q.split())
     if args.lineage:
+        if args.hybrid:
+            con.execute("PRAGMA enable_hybrid")
         if args.no_persist:
             con.execute("PRAGMA disable_persist_lineage")
         con.execute("PRAGMA enable_lineage")
@@ -109,6 +113,8 @@ def execute(Q, con, args):
         con.execute("PRAGMA disable_profiling;")
     if args.lineage:
         con.execute("PRAGMA disable_lineage")
+        if args.hybrid:
+            con.execute("PRAGMA disable_hybrid")
         if args.no_persist:
             con.execute("PRAGMA enable_persist_lineage")
     return df, end - start
