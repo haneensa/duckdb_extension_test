@@ -4,6 +4,7 @@
 #include "duckdb/planner/operator/logical_join.hpp"
 #include "duckdb/execution/expression_executor.hpp"
 #include "duckdb/parallel/thread_context.hpp"
+#include "duckdb/execution/lineage_logger.hpp"
 #include <iostream>
 
 namespace duckdb {
@@ -56,6 +57,9 @@ public:
 
 unique_ptr<OperatorState> PhysicalLineageOperator::GetOperatorState(ExecutionContext &context) const {
   string table_name = GetName() + "_" + to_string(query_id) + "_" + to_string(operator_id);
+  std::cout << "Lineage store address from LM: " << &LineageGlobal::LS << " thread: " << &context.thread << std::endl;
+  // if a flag is set, then LineageGlobal::LS.init(parent_ptr, context.thread)
+  // if a flag is set, then LineageGlobal::LS.Get(parent_ptr, context.thread)
 	return make_uniq<PhysicalLineageState>(context, table_name, dependent_type, source_count, join_type);
 }
 
@@ -72,26 +76,25 @@ OperatorResultType PhysicalLineageOperator::Execute(ExecutionContext &context,
       std::cout << input.ColumnCount() << std::endl;
       for (auto &type : input.GetTypes()) { std::cout << type.ToString() << " "; }
       std::cout << "\n -------" << std::endl;
-      //std::cout << input.ToString() << std::endl;
     }
     if (left_rid == 0 && right_rid > 0) { // right semi join
       chunk.SetCardinality(input);
       chunk.Reference(input);
+      // pass annotations to parent since it is single annotations
       return OperatorResultType::NEED_MORE_INPUT;
     }
+
     if (this->dependent_type == LogicalOperatorType::LOGICAL_CHUNK_GET) { 
       chunk.SetCapacity(input);
       chunk.SetCardinality(input);
       for (idx_t i = 0; i < left_rid; i++) {
         chunk.data[i].Reference(input.data[i]);
       }
-      // Append row identifier
+      // Append row identifier since it's hard to modify Chunk Get
       chunk.data.back().Sequence(state.offset, 1, input.size());
       state.offset += input.size();
       return OperatorResultType::NEED_MORE_INPUT;
     }
-
-    // D_ASSERT();
 
     // reference payload from the input
     chunk.SetCapacity(input);
@@ -101,9 +104,9 @@ OperatorResultType PhysicalLineageOperator::Execute(ExecutionContext &context,
     }
     
     if (join_type == "MARK") {
+      // pass annotations to parent since it is single annotations
       chunk.data.back().Reference(input.data[left_rid]);
       chunk.data[left_rid].Reference(input.data.back());
-      //std::cout << chunk.ToString() << std::endl;
       return OperatorResultType::NEED_MORE_INPUT;
     }
 

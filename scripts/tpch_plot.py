@@ -1,5 +1,5 @@
 # TODO: merge logical into one
-# exp_20250317_1801
+# tpch_benchmark_capture_exp_20250323_0557.db
 import json
 import pandas as pd
 import argparse
@@ -36,15 +36,19 @@ parser.add_argument('--db', type=str, help='queries folder', default='tpch_bench
 args = parser.parse_args()
 
 
+con = duckdb.connect("tpch_benchmark_capture_exp_20250519_1959.db")
+tpch_df_sf10_gprom = con.execute("select * from tpch_capture").df()
+print(tpch_df_sf10_gprom)
 con = duckdb.connect(args.db)
 con.create_function("getMat", getMat, [VARCHAR], FLOAT)
 con.create_function("getAllExec", getAllExec, [VARCHAR], FLOAT)
 con.create_function("cat", cat, [BIGINT], VARCHAR)
-print(con.execute("select * from tpch_capture").df())
+tpch_all = con.execute("select * from tpch_capture UNION ALL select * from tpch_df_sf10_gprom").df()
+print(con.execute("select * from tpch_all").df())
 tpch_df = con.execute("""select *, cat(query) as qtype,
     getMat(plan_timings) as mat_time,
     getAllExec(plan_timings) as plan_runtime
-    from tpch_capture""").df()
+    from tpch_all""").df()
 tpch_opt = con.execute("""select * from tpch_df
                         where lineage_type='Logical-RID'
                           and query not in (select query from tpch_df
@@ -185,7 +189,7 @@ if 1:
         p += legend_side
         p += facet_grid(".~qtype", scales=esc("free_x"), space=esc("free_x"))
         postfix = """data$qid= factor(data$qid, levels=c({}))""".format(queries_order)
-        ggsave("figures/tpch_sample_{}.png".format(y_axis), p, postfix=postfix,  width=14, height=4, scale=0.8)
+        ggsave("figures/tpch_sample_{}.png".format(y_axis), p, postfix=postfix,  width=14, height=3, scale=0.8)
     
 q = f"""
 select lineage_type, sf, query,
@@ -248,3 +252,12 @@ for sf in sf_list:
          order by sys.lineage_type, sf, query, n_threads
          """
     print(con.execute(q).df())
+
+q = f"""select sf, sys.lineage_type, sys.qtype, avg(logical.roverhead), avg(sys.roverhead), avg(logical.roverhead/sys.roverhead)
+from (select * from tpch_metrics where lineage_type='Q-Level-OPT') as logical JOIN
+     (select * from tpch_metrics where lineage_type IN ('Q-Level-W', 'F-Level')) as sys
+     USING (query, sf, n_threads)
+     where n_threads=1
+     group by sf, sys.lineage_type, sys.qtype
+     """
+print(con.execute(q).df())

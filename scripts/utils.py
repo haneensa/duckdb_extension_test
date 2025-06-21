@@ -260,11 +260,11 @@ legend = theme_bw() + theme(**{
 #    libs=['grid']
 legend_bottom = legend + theme(**{
   "legend.position":esc("bottom"),
-  #"legend.spacing": "unit(-.5, 'cm')"
-
+  "legend.spacing": "unit(-.5, 'cm')"
 })
 legend_none = legend + theme(**{"legend.position": esc("none")})
 
 legend_side = legend + theme(**{
   "legend.position":esc("right"),
+  "legend.spacing": "unit(-.5, 'cm')"
 })

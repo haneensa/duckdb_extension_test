@@ -38,6 +38,17 @@ void LogicalLineageOperator::ResolveTypes()  {
     for (auto &type : types) { std::cout << type.ToString() << " ";}
      std::cout << "\n";
   }
+  if (mark_join) {
+    // if mark join, then need to move the end of the left child to the last column
+    types.erase(types.begin() + left_rid);
+    types.push_back(LogicalType::ROW_TYPE);
+    if (LineageState::debug) {
+      std::cout << "Mark join " << left_rid << std::endl;
+      for (auto &type : types) { std::cout << type.ToString() << " "; }
+      std::cout << "\n";
+    }
+    return;
+  }
   if (this->dependent_type == LogicalOperatorType::LOGICAL_COMPARISON_JOIN
      || this->dependent_type == LogicalOperatorType::LOGICAL_DELIM_JOIN) {
     auto& join = children[0]->Cast<LogicalJoin>();
@@ -56,21 +67,11 @@ void LogicalLineageOperator::ResolveTypes()  {
     }
     types.erase(types.begin() + left_rid);
   }
-  if (mark_join) {
-    // if mark join, then need to move the end of the left child to the last column
-    // std::cout << "Mark join " << std::endl;
-    //types.erase(types.begin() + left_rid);
-    //types.push_back(LogicalType::ROW_TYPE);
-    // for (auto &type : types) { std::cout << type.ToString() << " "; }
-    // std::cout << "\n";
-    return;
-  }
   types.pop_back();
   if (!is_root) types.push_back(LogicalType::ROW_TYPE);
 }
 
 vector<ColumnBinding> LogicalLineageOperator::GetColumnBindings() {
-//  std::cout << "**** " << std::endl;
   if (children.empty()) return {};
 //  std::cout << "[ Child type: " << EnumUtil::ToChars<LogicalOperatorType>(dependent_type) << "\n";
   auto child_bindings = children[0]->GetColumnBindings();
@@ -94,20 +95,24 @@ vector<ColumnBinding> LogicalLineageOperator::GetColumnBindings() {
   }
 
   if (mark_join) {
-     // std::cout << "join binding: " << left_rid << " " << child_bindings.size() << " " << types.size() << std::endl;
-        auto& join = children[0]->children[0]->Cast<LogicalJoin>();
-       // std::cout << "( join left: " << std::endl;
-       // for (auto &binding : join.children[0]->GetColumnBindings()) { std::cout << binding.ToString() << " "; }
-        //std::cout << "\n ) " << left_rid << " " << child_bindings.size() << " " 
-      //    << EnumUtil::ToChars<LogicalOperatorType>(dependent_type) << "\n";
-    //for (auto &binding : child_bindings) { std::cout << binding.ToString() << " ";}
-    // std::cout << "\n";
-      auto left_most = child_bindings[left_rid];
-      child_bindings.erase(child_bindings.begin() + left_rid);
-      child_bindings.push_back(left_most);
-      // get bindings of child
-     // for (auto &binding : child_bindings) { std::cout << binding.ToString() << " ";}
-     // std::cout << "\n";
+    auto& join = children[0]->children[0]->Cast<LogicalJoin>();
+    if (LineageState::debug) {
+      std::cout << " mark join binding: " << left_rid << " " << child_bindings.size() << " " << types.size() << std::endl;
+      std::cout << "( join left: " << std::endl;
+      for (auto &binding : join.children[0]->GetColumnBindings()) { std::cout << binding.ToString() << " "; }
+      std::cout << "\n ) " << left_rid << " " << child_bindings.size() <<  "\n";
+      //for (auto &binding : child_bindings) { std::cout << binding.ToString() << " ";}
+      // std::cout << "\n";
+    }
+    auto left_most = child_bindings[left_rid];
+    child_bindings.erase(child_bindings.begin() + left_rid);
+    child_bindings.push_back(left_most);
+    // get bindings of child
+    if (LineageState::debug) {
+      for (auto &binding : child_bindings) { std::cout << " ---> " << binding.ToString() << " ";}
+       std::cout << "\n";
+    }
+    return child_bindings;
   }
 
   if (this->dependent_type == LogicalOperatorType::LOGICAL_COMPARISON_JOIN

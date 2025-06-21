@@ -29,6 +29,6 @@ df = con.execute(query).df()
 print(df)
 print(con.execute("PRAGMA disable_lineage").df())
 
-print(con.execute("select * from lineage_meta(-1)").df())
+#print(con.execute("select * from lineage_meta(-1)").df())
 # pass provenance type: lineage, prov_poly
 #print(con.execute("select * from lineage_scan('PHYSICAL_LINEAGE_0', [0])").df())

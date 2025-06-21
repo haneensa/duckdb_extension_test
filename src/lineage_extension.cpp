@@ -1,18 +1,10 @@
-// safe: q1, q2, q3, q4, q5, q6, q7, q8, q9, q10, q11, q12, q13, q14, q15, q17, q18, q19, q20, q21
-// 2: duckdb.duckdb.InternalException: INTERNAL Error: Failed to bind column reference "n_name" [3.2] (bindings: {#[15.0], #[2.1], #[2.2], #[0.0], #[2.3], #[1.0], #[1.2], #[1.3], #[1.4], #[1.5], #[15.0]})
-// 20: semi, right_semi,delim_join (right) duckdb.duckdb.InternalException: INTERNAL Error: Failed to bind column reference "ps_suppkey" [8.2] (bindings: {#[23.0], #[8.0], #[8.1], #[23.0]})
-// 17: delim join right duckdb.duckdb.InternalException: INTERNAL Error: Failed to bind column reference "l_extendedprice" [0.2] (bindings: {#[9.0], #[0.0], #[0.1], #[9.0]})
-//    new: duckdb.duckdb.InternalException: INTERNAL Error: Vector::Reference used on vector of different type
-//
-// 22: delim_join right_anti + mark join (duckdb.duckdb.InternalException: INTERNAL Error: Vector::Reference used on vector of different type)
-// q16 filter expression after mark join-> duckdb.duckdb.InternalException: INTERNAL Error: Vector::Reference used on vector of different type
-// 4 and 21 are the same (right delim join) (NEED TO FIGURE HOW to agg rowids)
 #define DUCKDB_EXTENSION_MAIN
 #include "duckdb/main/client_context.hpp"
 #include "lineage_extension.hpp"
 #include "lineage_reader.hpp"
 #include "lineage_meta.hpp"
 #include "logical_lineage_operator.hpp"
+#include "duckdb/execution/lineage_logger.hpp"
 #include "duckdb/main/config.hpp"
 #include "duckdb/catalog/catalog.hpp"
 #include "duckdb/catalog/catalog_entry/aggregate_function_catalog_entry.hpp"
@@ -170,7 +162,7 @@ idx_t ProcessJoin(unique_ptr<LogicalOperator> &op, vector<idx_t>& rowids, idx_t 
     lop->mark_join = true;
     op = std::move(lop);
     // add projection?
-    return left_col_id + 1 /* bool col */;
+    return left_col_id+1 /* bool col */;
   } else if (join.join_type == JoinType::SEMI || join.join_type == JoinType::ANTI) {
       if (LineageState::debug)
     std::cout << "inject semi join: " << left_col_id << " " << join.left_projection_map.size() << std::endl;
@@ -269,15 +261,18 @@ idx_t InjectLineageOperator(unique_ptr<LogicalOperator> &op,ClientContext &conte
             lop->Cast<LogicalLineageOperator>().left_rid << std::endl;
             lop->Cast<LogicalLineageOperator>().dependent_type = op->type;
       
+            idx_t child_left_rid = lop->Cast<LogicalLineageOperator>().left_rid;
             if (!filter.projection_map.empty()) {
-              filter.projection_map.push_back(col_id); 
+              // annotations, but projection_map refer to the extra bool column that we need to adjust
+              // the last column is the boolean
+              filter.projection_map.push_back(child_left_rid+1);
+              lop->Cast<LogicalLineageOperator>().left_rid = filter.projection_map.size()-2; 
               new_col_id = filter.projection_map.size()-1; 
             }
-            lop->Cast<LogicalLineageOperator>().left_rid = new_col_id;
             op->children[0] = std::move(lop->children[0]);
             lop->children[0] = std::move(op);
             op = std::move(lop);
-            return rowids[0];
+            return new_col_id;
         }
       }
       if (!filter.projection_map.empty()) {
@@ -340,6 +335,7 @@ idx_t InjectLineageOperator(unique_ptr<LogicalOperator> &op,ClientContext &conte
     } else if (op->type == LogicalOperatorType::LOGICAL_AGGREGATE_AND_GROUP_BY) {
         auto &aggr = op->Cast<LogicalAggregate>();
        // if (!aggr.groups.empty()) {
+       // TODO: inject one prior that is specialized to set active_log
             if (LineageState::debug) std::cout << "[DEBUG] Modifying Aggregate operator\n";
             auto list_function = GetListFunction(context);
             auto rowid_colref = make_uniq_base<Expression, BoundReferenceExpression>(LogicalType::ROW_TYPE, rowids[0]);

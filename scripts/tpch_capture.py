@@ -59,19 +59,12 @@ opt_queries = [2, 4, 15, 16, 17, 20, 21]
 dont_scale = [2, 4, 17, 20, 21] #, 4, 16, 17, 20, 21, 22]
 dont_scale_10 = [11, 22]
 dont_scale_20 = [11, 16, 22]
-gprom_list = [1, 2, 4, 5, 7, 9, 11, 12, 13, 15, 22]
+gprom_list = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 21, 22]
 
-# 4, 16, 18, 20, 21, 22 join is empty. check why.
-# 11 nested loop join
-
-# 3, 7, 4
 results = []
 sf = args.sf
-# 4
-# semi join:, 20
 for th_id in threads_list:
-    for i in range(1, 23):
-        if args.lineage and i in [16, 22]: continue;
+    for i in [11]: #range(1, 23):
         dbname = f'tpch_{sf}.db'
         if not os.path.exists(dbname):
             #con = duckdb.connect(dbname)
@@ -86,7 +79,7 @@ for th_id in threads_list:
         print(f"running {th_id}, {i}")
         if args.gprom and i not in gprom_list: continue
         if (args.perm and args.opt == False) and ((i in dont_scale) or (sf>10 and i in dont_scale_20) or (sf==10 and i in dont_scale_10)): continue
-        if (args.gprom) and  ((sf>10 and i in dont_scale_20 or i==1) or (sf==10 and i in dont_scale_10)): continue
+        if (args.gprom) and  ((sf>10 and i in dont_scale_20) or (sf==10 and i in dont_scale_10)): continue
         if args.perm and args.opt and i not in opt_queries: continue
         args.qid = i
         # TODO: if i == 11 then replace the constant

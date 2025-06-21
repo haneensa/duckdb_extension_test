@@ -20,6 +20,9 @@ std::pair<int, int> LocateChunk(string table_name, idx_t oid) {
   return {index, offset};
 }
 
+// oids_list:
+// buffer:
+// child: reference to temporary vector that act as oids_list if present
 idx_t get_lineage(DataChunk& output, idx_t query_id, idx_t pipeline_idx, idx_t cur_op,
     vector<int64_t> oids_list, vector<int64_t>& buffer, vector<Value>& child, bool use_child=false,
     bool is_right_child=false) {
@@ -66,13 +69,13 @@ idx_t get_lineage(DataChunk& output, idx_t query_id, idx_t pipeline_idx, idx_t c
       idx_t lineage_size = LineageState::lineage_store[ table_name ][index].second;
       idx_t new_oid = lineage.GetValue(oid-offset).GetValue<int64_t>();
       if (is_leaf & use_child) {
-        child[i] = Value::BIGINT(new_oid);
+        child[i] = Value::BIGINT(new_oid); // replace it with a new value cause it is not owned ; wouldn't this change the original val?
       } else if (is_leaf) {
         child.push_back(Value::BIGINT(new_oid));
       } else if (use_child) {
         buffer.push_back(new_oid);
       } else {
-        oids_list[i] = new_oid;
+        oids_list[i] = new_oid; // replace it. this is ok because it is one to one
       }
       if (t == LogicalOperatorType::LOGICAL_COMPARISON_JOIN) {
         Vector& lineage_right = LineageState::lineage_store[ table_name + "_right" ][index].first;
@@ -150,6 +153,8 @@ idx_t get_lineage(DataChunk& output, idx_t query_id, idx_t pipeline_idx, idx_t c
   return 0;
 }
 
+// start from sink: get_lineage(sink, src1, oid) -> iids s.t. src1 = join(a, b)
+// last src becomes sink: get_lineage(src1, a, iids1) -> iids && get_lineage(src1, b, iids) -> iids2
 void LineageQuery::GetNextChunk(DataChunk& output) {
   // for each pipeline. start from the last operator?
   // 1. if specific table is specified, find the pipeline for that table
